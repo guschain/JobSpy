@@ -9,7 +9,6 @@ from job_finger.config import DEFAULT_CONFIG_PATH, load_config, write_example_co
 from job_finger.drafts import write_application_brief
 from job_finger.pipeline import run_searches
 from job_finger.storage import (
-    connect,
     export_ranked_csv,
     get_job_with_latest_score,
     list_ranked_jobs,
@@ -36,14 +35,14 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.set_defaults(func=cmd_init)
 
     search_parser = subparsers.add_parser("search", help="scrape, score, and store jobs")
-    add_config_db_args(search_parser)
+    add_config_lake_args(search_parser)
     search_parser.add_argument("--search", action="append", dest="searches")
     search_parser.add_argument("--dry-run", action="store_true")
     search_parser.add_argument("--top", type=int, default=10)
     search_parser.set_defaults(func=cmd_search)
 
     rank_parser = subparsers.add_parser("rank", help="show ranked jobs from storage")
-    add_config_db_args(rank_parser)
+    add_config_lake_args(rank_parser)
     rank_parser.add_argument("--limit", type=int, default=25)
     rank_parser.add_argument("--min-score", type=float, default=0)
     rank_parser.add_argument("--status")
@@ -51,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     rank_parser.set_defaults(func=cmd_rank)
 
     track_parser = subparsers.add_parser("track", help="update application status")
-    add_config_db_args(track_parser)
+    add_config_lake_args(track_parser)
     track_parser.add_argument("job_id")
     track_parser.add_argument(
         "--status",
@@ -79,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     brief_parser = subparsers.add_parser(
         "brief", help="write a resume and cover-letter prep brief"
     )
-    add_config_db_args(brief_parser)
+    add_config_lake_args(brief_parser)
     brief_parser.add_argument("job_id")
     brief_parser.add_argument("--out")
     brief_parser.set_defaults(func=cmd_brief)
@@ -87,9 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def add_config_db_args(parser: argparse.ArgumentParser) -> None:
+def add_config_lake_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
-    parser.add_argument("--db")
+    parser.add_argument("--lake")
 
 
 def cmd_init(args) -> int:
@@ -103,7 +102,7 @@ def cmd_search(args) -> int:
     results = run_searches(
         config,
         search_names=args.searches,
-        db_path=args.db,
+        lake_path=args.lake,
         dry_run=args.dry_run,
     )
     for result in results:
@@ -118,11 +117,10 @@ def cmd_search(args) -> int:
 
 def cmd_rank(args) -> int:
     config = load_config(args.config)
-    db_path = config.resolve_storage_path(args.db)
-    with connect(db_path) as connection:
-        rows = list_ranked_jobs(
-            connection, limit=args.limit, min_score=args.min_score, status=args.status
-        )
+    lake_path = config.resolve_storage_path(args.lake)
+    rows = list_ranked_jobs(
+        lake_path, limit=args.limit, min_score=args.min_score, status=args.status
+    )
     if args.csv:
         path = export_ranked_csv(rows, args.csv)
         print(f"Wrote {path}")
@@ -133,29 +131,27 @@ def cmd_rank(args) -> int:
 
 def cmd_track(args) -> int:
     config = load_config(args.config)
-    db_path = config.resolve_storage_path(args.db)
-    with connect(db_path) as connection:
-        update_application(
-            connection,
-            job_id=args.job_id,
-            status=args.status,
-            notes=args.notes,
-            applied_at=args.applied_at,
-            next_action_at=args.next_action_at,
-            resume_version=args.resume_version,
-            cover_letter_path=args.cover_letter_path,
-            contact_name=args.contact_name,
-            contact_email=args.contact_email,
-        )
+    lake_path = config.resolve_storage_path(args.lake)
+    update_application(
+        lake_path,
+        job_id=args.job_id,
+        status=args.status,
+        notes=args.notes,
+        applied_at=args.applied_at,
+        next_action_at=args.next_action_at,
+        resume_version=args.resume_version,
+        cover_letter_path=args.cover_letter_path,
+        contact_name=args.contact_name,
+        contact_email=args.contact_email,
+    )
     print(f"Updated {args.job_id} to {args.status}")
     return 0
 
 
 def cmd_brief(args) -> int:
     config = load_config(args.config)
-    db_path = config.resolve_storage_path(args.db)
-    with connect(db_path) as connection:
-        row = get_job_with_latest_score(connection, args.job_id)
+    lake_path = config.resolve_storage_path(args.lake)
+    row = get_job_with_latest_score(lake_path, args.job_id)
     if row is None:
         raise SystemExit(f"No job found with id {args.job_id}")
     out_path = args.out or f"briefs/{args.job_id}.md"

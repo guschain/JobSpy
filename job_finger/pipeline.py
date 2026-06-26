@@ -6,13 +6,7 @@ from typing import Any
 
 from job_finger.config import JobFingerConfig, SearchSpec
 from job_finger.scoring import ScoreBreakdown, score_job
-from job_finger.storage import (
-    connect,
-    create_search_run,
-    finish_search_run,
-    save_score,
-    upsert_job,
-)
+from job_finger.storage import JobLake, job_fingerprint
 
 
 @dataclass(frozen=True)
@@ -34,54 +28,46 @@ class SearchResult:
 def run_searches(
     config: JobFingerConfig,
     search_names: list[str] | None = None,
-    db_path: str | Path | None = None,
+    lake_path: str | Path | None = None,
     dry_run: bool = False,
 ) -> list[SearchResult]:
-    connection = None if dry_run else connect(config.resolve_storage_path(str(db_path) if db_path else None))
-    try:
-        results = []
-        for search in config.selected_searches(search_names):
-            results.append(_run_single_search(config, search, connection, dry_run=dry_run))
-        return results
-    finally:
-        if connection is not None:
-            connection.close()
+    lake = None if dry_run else JobLake(
+        config.resolve_storage_path(str(lake_path) if lake_path else None)
+    )
+    results = []
+    for search in config.selected_searches(search_names):
+        results.append(_run_single_search(config, search, lake, dry_run=dry_run))
+    return results
 
 
 def _run_single_search(
     config: JobFingerConfig,
     search: SearchSpec,
-    connection,
+    lake: JobLake | None,
     dry_run: bool,
 ) -> SearchResult:
     scrape_jobs = _load_scraper()
     dataframe = scrape_jobs(**search.to_scrape_kwargs())
     records = dataframe.to_dict(orient="records") if hasattr(dataframe, "to_dict") else []
+
+    ranked: list[RankedJob] = []
+    for record in records:
+        breakdown = score_job(record, config.profile)
+        job_id = job_fingerprint(record)
+        ranked.append(RankedJob(job_id=job_id, job=record, score=breakdown))
+
+    ranked.sort(key=lambda item: item.score.score, reverse=True)
     run_id = None
-    if connection is not None:
-        run_id = create_search_run(
-            connection,
+    stored_count = 0
+    if lake is not None:
+        run_id = lake.save_search_result(
             search_name=search.name,
             search_term=search.search_term,
             location=search.location,
             sites=search.site_name,
+            ranked_jobs=ranked,
         )
-
-    ranked: list[RankedJob] = []
-    stored_count = 0
-    for record in records:
-        breakdown = score_job(record, config.profile)
-        if connection is not None:
-            job_id = upsert_job(connection, record)
-            save_score(connection, job_id, run_id, breakdown)
-            stored_count += 1
-        else:
-            job_id = str(record.get("id") or record.get("job_url") or len(ranked) + 1)
-        ranked.append(RankedJob(job_id=job_id, job=record, score=breakdown))
-
-    ranked.sort(key=lambda item: item.score.score, reverse=True)
-    if connection is not None and run_id:
-        finish_search_run(connection, run_id, len(records), stored_count)
+        stored_count = len(ranked)
 
     return SearchResult(
         search_name=search.name,

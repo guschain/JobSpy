@@ -12,9 +12,11 @@ def build_application_brief(job: Mapping[str, Any], profile: UserProfile) -> str
     company = job.get("company") or "Unknown company"
     score = job.get("score")
     probability = job.get("estimated_fit_probability")
-    matched = _json_list(job.get("matched_keywords_json"))
-    missing = _json_list(job.get("missing_must_haves_json"))
-    reasons = _json_list(job.get("reasons_json"))
+    matched = _json_list(job.get("matched_keywords", job.get("matched_keywords_json")))
+    missing = _json_list(
+        job.get("missing_must_haves", job.get("missing_must_haves_json"))
+    )
+    reasons = _json_list(job.get("reasons", job.get("reasons_json")))
 
     resume_focus = matched[:8] or profile.must_have_keywords[:8]
     cover_letter_angles = [

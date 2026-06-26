@@ -192,8 +192,8 @@ The added layer is focused on filtering before applying:
 - Portugal-first search defaults for Indeed and LinkedIn
 - explainable fit scoring by skills, title, seniority, location, remote setup,
   salary, language, and recency
-- SQLite storage for jobs, search runs, scores, application statuses, and
-  generated application documents
+- data-lake style storage: raw scrape runs as JSONL, curated ranked snapshots,
+  CSV exports, application event logs, and latest application state
 - status tracking for saved, applied, follow-up, interview, offer, rejected, and
   ignored jobs
 - application briefs with resume emphasis and cover-letter angles
@@ -209,6 +209,18 @@ Edit the generated profile, then scrape and rank:
 ```bash
 python -m job_finger search --config job_finger.config.json --top 15
 python -m job_finger rank --config job_finger.config.json --min-score 60
+```
+
+The default local lake layout is:
+
+```plaintext
+job_finger_lake/
+  raw/search_runs/YYYY-MM-DD/*.jsonl
+  raw/search_runs/YYYY-MM-DD/*.manifest.json
+  curated/ranked_jobs_latest.jsonl
+  curated/ranked_jobs_latest.csv
+  applications/application_events.jsonl
+  applications/applications_latest.json
 ```
 
 Track an application:

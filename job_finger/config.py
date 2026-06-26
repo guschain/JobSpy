@@ -133,7 +133,7 @@ class SearchSpec:
 class JobFingerConfig:
     profile: UserProfile
     searches: list[SearchSpec]
-    storage_path: str = "job_finger.sqlite3"
+    storage_path: str = "job_finger_lake"
     source_path: Path | None = None
 
     @classmethod
@@ -146,7 +146,7 @@ class JobFingerConfig:
         return cls(
             profile=UserProfile.from_dict(data.get("profile")),
             searches=searches,
-            storage_path=str(data.get("storage_path", "job_finger.sqlite3")),
+            storage_path=str(data.get("storage_path", "job_finger_lake")),
             source_path=source_path,
         )
 
@@ -176,7 +176,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> JobFingerConfig:
 
 def example_config() -> dict[str, Any]:
     return {
-        "storage_path": "job_finger.sqlite3",
+        "storage_path": "job_finger_lake",
         "profile": {
             "name": "Your Name",
             "base_location": "Portugal",
