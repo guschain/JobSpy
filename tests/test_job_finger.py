@@ -118,8 +118,8 @@ class StorageTests(unittest.TestCase):
         breakdown = score_job(job, profile, today=date(2026, 6, 26))
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            lake_path = Path(temp_dir) / "job_finger_lake"
-            lake = JobLake(lake_path)
+            data_path = Path(temp_dir) / "job_finger_data"
+            lake = JobLake(data_path)
             run_id = lake.save_search_result(
                 search_name="test-search",
                 search_term="software engineer",
@@ -130,16 +130,18 @@ class StorageTests(unittest.TestCase):
                 ],
             )
             update_application(
-                lake_path,
+                data_path,
                 job_id="test-1",
                 status="applied",
                 notes="Applied with backend CV",
             )
-            rows = list_ranked_jobs(lake_path, limit=10)
-            raw_files = list((lake_path / "raw" / "search_runs").rglob("*.jsonl"))
+            rows = list_ranked_jobs(data_path, limit=10)
+            files = sorted(path.name for path in data_path.iterdir() if path.is_file())
+            directories = [path for path in data_path.iterdir() if path.is_dir()]
 
         self.assertTrue(run_id)
-        self.assertEqual(len(raw_files), 1)
+        self.assertEqual(files, ["applications.jsonl", "jobs.jsonl", "scrapes.jsonl"])
+        self.assertEqual(directories, [])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["job_id"], "test-1")
         self.assertEqual(rows[0]["application_status"], "applied")

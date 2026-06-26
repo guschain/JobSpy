@@ -141,7 +141,7 @@ class SearchSpec:
 class JobFingerConfig:
     profile: UserProfile
     searches: list[SearchSpec]
-    storage_path: str = "job_finger_lake"
+    storage_path: str = "job_finger_data"
     related_keyword_groups: dict[str, list[str]] = field(default_factory=dict)
     source_path: Path | None = None
 
@@ -155,7 +155,7 @@ class JobFingerConfig:
         return cls(
             profile=UserProfile.from_dict(data.get("profile")),
             searches=searches,
-            storage_path=str(data.get("storage_path", "job_finger_lake")),
+            storage_path=str(data.get("storage_path", "job_finger_data")),
             related_keyword_groups={
                 str(key): unique_terms(value)
                 for key, value in data.get("related_keyword_groups", {}).items()
@@ -189,7 +189,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> JobFingerConfig:
 
 def example_config() -> dict[str, Any]:
     return {
-        "storage_path": "job_finger_lake",
+        "storage_path": "job_finger_data",
         "related_keyword_groups": DEFAULT_RELATED_KEYWORD_GROUPS,
         "profile": {
             "name": "Your Name",

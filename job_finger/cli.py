@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.set_defaults(func=cmd_init)
 
     search_parser = subparsers.add_parser("search", help="scrape, score, and store jobs")
-    add_config_lake_args(search_parser)
+    add_config_data_args(search_parser)
     search_parser.add_argument("--search", action="append", dest="searches")
     add_keyword_args(search_parser)
     add_ad_hoc_search_args(search_parser)
@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.set_defaults(func=cmd_search)
 
     rank_parser = subparsers.add_parser("rank", help="show ranked jobs from storage")
-    add_config_lake_args(rank_parser)
+    add_config_data_args(rank_parser)
     rank_parser.add_argument("--limit", type=int, default=25)
     rank_parser.add_argument("--min-score", type=float, default=0)
     rank_parser.add_argument("--status")
@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     rank_parser.set_defaults(func=cmd_rank)
 
     track_parser = subparsers.add_parser("track", help="update application status")
-    add_config_lake_args(track_parser)
+    add_config_data_args(track_parser)
     track_parser.add_argument("job_id")
     track_parser.add_argument(
         "--status",
@@ -92,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     brief_parser = subparsers.add_parser(
         "brief", help="write a resume and cover-letter prep brief"
     )
-    add_config_lake_args(brief_parser)
+    add_config_data_args(brief_parser)
     brief_parser.add_argument("job_id")
     brief_parser.add_argument("--out")
     brief_parser.set_defaults(func=cmd_brief)
@@ -100,9 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def add_config_lake_args(parser: argparse.ArgumentParser) -> None:
+def add_config_data_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
-    parser.add_argument("--lake")
+    parser.add_argument("--data", dest="data")
+    parser.add_argument("--lake", dest="data", help=argparse.SUPPRESS)
 
 
 def add_keyword_args(parser: argparse.ArgumentParser) -> None:
@@ -137,7 +138,7 @@ def cmd_search(args) -> int:
         config,
         search_names=args.searches,
         search_specs=[ad_hoc_search] if ad_hoc_search else None,
-        lake_path=args.lake,
+        lake_path=args.data,
         dry_run=args.dry_run,
     )
     for result in results:
@@ -152,7 +153,7 @@ def cmd_search(args) -> int:
 
 def cmd_rank(args) -> int:
     config = load_config(args.config)
-    lake_path = config.resolve_storage_path(args.lake)
+    lake_path = config.resolve_storage_path(args.data)
     keyword_terms = collect_keyword_terms(args, config)
     fetch_limit = 100000 if keyword_terms else args.limit
     rows = list_ranked_jobs(
@@ -216,7 +217,7 @@ def collect_raw_keywords(args) -> list[str]:
 
 def cmd_track(args) -> int:
     config = load_config(args.config)
-    lake_path = config.resolve_storage_path(args.lake)
+    lake_path = config.resolve_storage_path(args.data)
     update_application(
         lake_path,
         job_id=args.job_id,
@@ -235,7 +236,7 @@ def cmd_track(args) -> int:
 
 def cmd_brief(args) -> int:
     config = load_config(args.config)
-    lake_path = config.resolve_storage_path(args.lake)
+    lake_path = config.resolve_storage_path(args.data)
     row = get_job_with_latest_score(lake_path, args.job_id)
     if row is None:
         raise SystemExit(f"No job found with id {args.job_id}")

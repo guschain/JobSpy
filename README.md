@@ -192,8 +192,8 @@ The added layer is focused on filtering before applying:
 - Portugal-first search defaults for Indeed and LinkedIn
 - explainable fit scoring by skills, title, seniority, location, remote setup,
   salary, language, and recency
-- data-lake style storage: raw scrape runs as JSONL, curated ranked snapshots,
-  CSV exports, application event logs, and latest application state
+- simple file storage in one folder: scrape history, latest ranked jobs, and
+  application events as JSONL
 - status tracking for saved, applied, follow-up, interview, offer, rejected, and
   ignored jobs
 - application briefs with resume emphasis and cover-letter angles
@@ -219,7 +219,7 @@ python -m job_finger search --related-to backend --remote --results 25
 python -m job_finger search --keywords python fastapi postgres --match all
 ```
 
-Filter the local lake by exact or related terms:
+Filter local data by exact or related terms:
 
 ```bash
 python -m job_finger rank --keyword fastapi
@@ -230,16 +230,19 @@ Related groups are configurable under `related_keyword_groups` in
 `job_finger.config.json`. Defaults include backend, frontend, fullstack, data,
 ai, devops, security, qa, product, and mobile.
 
-The default local lake layout is:
+The default local data layout is intentionally flat:
 
 ```plaintext
-job_finger_lake/
-  raw/search_runs/YYYY-MM-DD/*.jsonl
-  raw/search_runs/YYYY-MM-DD/*.manifest.json
-  curated/ranked_jobs_latest.jsonl
-  curated/ranked_jobs_latest.csv
-  applications/application_events.jsonl
-  applications/applications_latest.json
+job_finger_data/
+  scrapes.jsonl
+  jobs.jsonl
+  applications.jsonl
+```
+
+CSV is created only when explicitly requested:
+
+```bash
+python -m job_finger rank --csv exports/jobs.csv
 ```
 
 Track an application:
