@@ -1,4 +1,5 @@
 /venv/
+/.venv/
 /.idea
 **/__pycache__/
 **/.pytest_cache/
@@ -9,3 +10,11 @@
 .env
 dist
 job_finger_data/
+/workspace/config.json
+/workspace/cv.pdf
+/workspace/cv.md
+/workspace/cv_profile.json
+/workspace/data/
+/workspace/workspace/
+/workspace/briefs/
+/workspace/exports/

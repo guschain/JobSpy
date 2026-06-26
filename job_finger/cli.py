@@ -8,14 +8,17 @@ from typing import Sequence
 from job_finger.config import (
     DEFAULT_CONFIG_PATH,
     SearchSpec,
+    ensure_workspace_files,
     load_config,
     write_example_config,
 )
 from job_finger.drafts import write_application_brief
 from job_finger.pipeline import run_searches
+from job_finger.resume import convert_resume_to_markdown, write_resume_profile
 from job_finger.search_terms import (
     build_keyword_query,
     expand_related_topics,
+    filter_rows_excluding_terms,
     filter_rows_by_terms,
     unique_terms,
 )
@@ -46,6 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--force", action="store_true")
     init_parser.set_defaults(func=cmd_init)
 
+    cv_parser = subparsers.add_parser(
+        "cv", help="convert a CV PDF/DOCX/etc. into workspace/cv.md"
+    )
+    cv_parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    cv_parser.add_argument("--input")
+    cv_parser.add_argument("--out")
+    cv_parser.add_argument("--profile-out")
+    cv_parser.set_defaults(func=cmd_cv)
+
     search_parser = subparsers.add_parser("search", help="scrape, score, and store jobs")
     add_config_data_args(search_parser)
     search_parser.add_argument("--search", action="append", dest="searches")
@@ -62,8 +74,21 @@ def build_parser() -> argparse.ArgumentParser:
     rank_parser.add_argument("--status")
     rank_parser.add_argument("--published-from")
     rank_parser.add_argument("--published-to")
+    rank_parser.add_argument("--work-mode", choices=["remote", "hybrid", "office", "unknown"])
+    rank_parser.add_argument("--seniority", choices=["intern", "junior", "mid", "senior", "unknown"])
+    rank_parser.add_argument("--min-salary", type=float)
+    rank_parser.add_argument("--recommendation", choices=["priority", "strong", "review", "low"])
+    rank_parser.add_argument("--min-cv-matches", type=int)
+    rank_parser.add_argument("--max-cv-gaps", type=int)
+    rank_parser.add_argument("--no-negative", action="store_true")
+    rank_parser.add_argument(
+        "--sort",
+        choices=["score", "newest", "salary", "company"],
+        default="score",
+    )
     rank_parser.add_argument("--csv")
     add_keyword_args(rank_parser)
+    add_exclude_args(rank_parser)
     rank_parser.set_defaults(func=cmd_rank)
 
     track_parser = subparsers.add_parser("track", help="update application status")
@@ -122,6 +147,16 @@ def add_keyword_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--match", choices=["any", "all"], default="any")
 
 
+def add_exclude_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--exclude-keyword", action="append", default=[])
+    parser.add_argument("--exclude-keywords", nargs="+", default=[])
+    parser.add_argument(
+        "--exclude-scope",
+        choices=["all", "title", "content"],
+        default="all",
+    )
+
+
 def add_ad_hoc_search_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--name")
     parser.add_argument("--site", action="append", dest="sites")
@@ -137,6 +172,23 @@ def add_ad_hoc_search_args(parser: argparse.ArgumentParser) -> None:
 def cmd_init(args) -> int:
     path = write_example_config(args.config, force=args.force)
     print(f"Wrote {path}")
+    print(f"Workspace ready at {Path(path).parent}")
+    return 0
+
+
+def cmd_cv(args) -> int:
+    config_path = Path(args.config)
+    workspace = config_path.parent
+    ensure_workspace_files(config_path)
+    source = Path(args.input) if args.input else workspace / "cv.pdf"
+    target = Path(args.out) if args.out else workspace / "cv.md"
+    path = convert_resume_to_markdown(source, target)
+    profile_path = (
+        Path(args.profile_out) if args.profile_out else workspace / "cv_profile.json"
+    )
+    written_profile = write_resume_profile(path, profile_path)
+    print(f"Wrote {path}")
+    print(f"Wrote {written_profile}")
     return 0
 
 
@@ -164,7 +216,8 @@ def cmd_rank(args) -> int:
     config = load_config(args.config)
     lake_path = config.resolve_storage_path(args.data)
     keyword_terms = collect_keyword_terms(args, config)
-    fetch_limit = 100000 if keyword_terms else args.limit
+    exclude_terms = collect_exclude_terms(args)
+    fetch_limit = 100000 if keyword_terms or exclude_terms else args.limit
     rows = list_ranked_jobs(
         lake_path,
         limit=fetch_limit,
@@ -172,9 +225,22 @@ def cmd_rank(args) -> int:
         status=args.status,
         published_from=args.published_from,
         published_to=args.published_to,
+        work_mode=args.work_mode,
+        seniority=args.seniority,
+        min_salary=args.min_salary,
+        recommendation=args.recommendation,
+        min_cv_matches=args.min_cv_matches,
+        max_cv_gaps=args.max_cv_gaps,
+        no_negative=args.no_negative,
+        sort_by=args.sort,
     )
     if keyword_terms:
         rows = filter_rows_by_terms(rows, keyword_terms, match=args.match)
+    if exclude_terms:
+        rows = filter_rows_excluding_terms(
+            rows, exclude_terms, scope=args.exclude_scope
+        )
+    if keyword_terms or exclude_terms:
         rows = rows[: args.limit]
     if args.csv:
         path = export_ranked_csv(rows, args.csv)
@@ -229,6 +295,10 @@ def collect_raw_keywords(args) -> list[str]:
     return unique_terms([*args.keyword, *args.keywords])
 
 
+def collect_exclude_terms(args) -> list[str]:
+    return unique_terms([*args.exclude_keyword, *args.exclude_keywords])
+
+
 def cmd_track(args) -> int:
     config = load_config(args.config)
     lake_path = config.resolve_storage_path(args.data)
@@ -261,6 +331,9 @@ def cmd_brief(args) -> int:
 
 
 def cmd_ui(args) -> int:
+    config_path = Path(args.config)
+    if not config_path.exists():
+        write_example_config(config_path)
     run_ui_server(
         config_path=args.config,
         data_path=args.data,

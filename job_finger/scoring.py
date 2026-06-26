@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import Any, Mapping
 
 from job_finger.config import UserProfile
+from job_finger.matching import analyze_job_match
 
 
 SENIORITY_TERMS = {
@@ -29,6 +30,7 @@ class ScoreBreakdown:
     missing_must_haves: list[str] = field(default_factory=list)
     penalties: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    analysis: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +42,7 @@ class ScoreBreakdown:
             "missing_must_haves": self.missing_must_haves,
             "penalties": self.penalties,
             "reasons": self.reasons,
+            "analysis": self.analysis,
         }
 
 
@@ -273,6 +276,14 @@ def score_job(
         f"Matched nice-to-have keywords: {', '.join(nice_matches)}",
     )
 
+    resume_matches = _matches(text, profile.resume_keywords)
+    add_component(
+        "resume_keywords",
+        min(len(resume_matches) / 8, 1.0) if profile.resume_keywords else None,
+        16,
+        f"Matched CV keywords: {', '.join(resume_matches[:12])}",
+    )
+
     add_component(
         "target_title",
         _title_score(title, text, profile.target_titles),
@@ -360,12 +371,25 @@ def score_job(
     estimated_probability = max(5, min(95, round(final_score)))
 
     matched_keywords = sorted(
-        set(must_matches + nice_matches + search_matches + required_matches)
+        set(
+            must_matches
+            + nice_matches
+            + resume_matches
+            + search_matches
+            + required_matches
+        )
     )
     if missing_must:
         reasons.append(f"Missing must-have keywords: {', '.join(missing_must)}")
     if penalties:
         reasons.extend(penalties)
+    analysis = analyze_job_match(
+        job,
+        profile,
+        matched_keywords=matched_keywords,
+        missing_must_haves=missing_must,
+        penalties=penalties,
+    )
 
     return ScoreBreakdown(
         score=round(final_score, 1),
@@ -376,4 +400,5 @@ def score_job(
         missing_must_haves=missing_must,
         penalties=penalties,
         reasons=reasons,
+        analysis=analysis,
     )

@@ -9,6 +9,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from job_finger.matching import normalize_job_fields
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -190,6 +192,14 @@ def list_ranked_jobs(
     status: str | None = None,
     published_from: str | date | None = None,
     published_to: str | date | None = None,
+    work_mode: str | None = None,
+    seniority: str | None = None,
+    min_salary: float | None = None,
+    recommendation: str | None = None,
+    min_cv_matches: int | None = None,
+    max_cv_gaps: int | None = None,
+    no_negative: bool = False,
+    sort_by: str = "score",
 ) -> list[dict[str, Any]]:
     store = JobLake(data_path)
     applications = store.load_application_state()
@@ -215,8 +225,22 @@ def list_ranked_jobs(
             posted_date is None or posted_date > published_to_date
         ):
             continue
+        if work_mode and str(row.get("work_mode") or "") != work_mode:
+            continue
+        if seniority and str(row.get("seniority") or "") != seniority:
+            continue
+        if min_salary is not None and (_best_salary(row) or 0) < min_salary:
+            continue
+        if recommendation and str(row.get("recommendation") or "") != recommendation:
+            continue
+        if min_cv_matches is not None and _list_count(row.get("cv_matched_keywords")) < min_cv_matches:
+            continue
+        if max_cv_gaps is not None and _list_count(row.get("cv_missing_keywords")) > max_cv_gaps:
+            continue
+        if no_negative and _list_count(row.get("negative_keywords")) > 0:
+            continue
         rows.append(row)
-    rows.sort(key=lambda row: float(row.get("score") or 0), reverse=True)
+    rows.sort(key=_sort_key(sort_by))
     return rows[:limit]
 
 
@@ -264,6 +288,11 @@ def _snapshot_record(
     seen_at: str,
 ) -> dict[str, Any]:
     clean_job = _clean_value(dict(job))
+    analysis = dict(score.get("analysis") or {})
+    normalized = {
+        **normalize_job_fields(clean_job),
+        **dict(analysis.get("normalized") or {}),
+    }
     return {
         "job_id": job_id,
         "run_id": run_id,
@@ -277,10 +306,18 @@ def _snapshot_record(
         "location": clean_job.get("location"),
         "date_posted": clean_job.get("date_posted"),
         "job_type": clean_job.get("job_type"),
+        "interval": normalized.get("salary_interval") or clean_job.get("interval"),
         "min_amount": clean_job.get("min_amount"),
         "max_amount": clean_job.get("max_amount"),
-        "currency": clean_job.get("currency"),
+        "currency": normalized.get("salary_currency") or clean_job.get("currency"),
+        "salary_source": normalized.get("salary_source"),
+        "salary_min": normalized.get("salary_min"),
+        "salary_max": normalized.get("salary_max"),
+        "salary_label": normalized.get("salary_label"),
         "is_remote": clean_job.get("is_remote"),
+        "work_mode": normalized.get("work_mode"),
+        "seniority": normalized.get("seniority"),
+        "employment_type": normalized.get("employment_type"),
         "description": clean_job.get("description"),
         "company_industry": clean_job.get("company_industry"),
         "score": score.get("score"),
@@ -291,6 +328,16 @@ def _snapshot_record(
         "missing_must_haves": score.get("missing_must_haves", []),
         "penalties": score.get("penalties", []),
         "reasons": score.get("reasons", []),
+        "skills": analysis.get("job_skills", []),
+        "cv_matched_keywords": analysis.get("cv_matched_keywords", []),
+        "cv_missing_keywords": analysis.get("cv_missing_keywords", []),
+        "positive_keywords": analysis.get("positive_keywords", []),
+        "negative_keywords": analysis.get("negative_keywords", []),
+        "match_explanation": analysis.get("match_explanation", []),
+        "application_suggestions": analysis.get("application_suggestions", []),
+        "cover_letter_keywords": analysis.get("cover_letter_keywords", []),
+        "cover_letter_draft": analysis.get("cover_letter_draft"),
+        "analysis": analysis,
         "raw_job": clean_job,
     }
 
@@ -332,6 +379,51 @@ def _clean_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_clean_value(item) for item in value]
     return value
+
+
+def _sort_key(sort_by: str):
+    if sort_by == "newest":
+        return lambda row: (
+            -(_parse_date(row.get("date_posted")) or date.min).toordinal(),
+            -float(row.get("score") or 0),
+        )
+    if sort_by == "salary":
+        return lambda row: (
+            -(_best_salary(row) or 0),
+            -float(row.get("score") or 0),
+        )
+    if sort_by == "company":
+        return lambda row: (
+            str(row.get("company") or "").lower(),
+            -float(row.get("score") or 0),
+        )
+    return lambda row: (-float(row.get("score") or 0), str(row.get("company") or ""))
+
+
+def _best_salary(row: Mapping[str, Any]) -> float | None:
+    values = [_safe_float(row.get("max_amount")), _safe_float(row.get("min_amount"))]
+    usable = [value for value in values if value is not None]
+    return max(usable) if usable else None
+
+
+def _list_count(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if value is None or value == "":
+        return 0
+    return 1
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
+        return None
+    return number
 
 
 def _parse_date(value: Any) -> date | None:

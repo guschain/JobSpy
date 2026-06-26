@@ -192,6 +192,10 @@ The added layer is focused on filtering before applying:
 - Portugal-first search defaults for Indeed and LinkedIn
 - explainable fit scoring by skills, title, seniority, location, remote setup,
   salary, language, and recency
+- CV PDF ingestion through MarkItDown, converted to `workspace/cv.md` and used
+  as extra matching keywords
+- normalized job signals for salary, work mode, seniority, detected skills,
+  CV matches, CV gaps, positive/negative keywords, and application suggestions
 - simple file storage in one folder: scrape history, latest ranked jobs, and
   application events as JSONL
 - status tracking for saved, applied, follow-up, interview, offer, rejected, and
@@ -201,75 +205,90 @@ The added layer is focused on filtering before applying:
 Create a local config:
 
 ```bash
-python -m job_finger init --config job_finger.config.json
+uv run job-finger init
 ```
 
-Edit the generated profile, then scrape and rank:
+Put your CV at `workspace/cv.pdf`, convert it with MarkItDown, then edit the
+generated profile in `workspace/config.json`:
 
 ```bash
-python -m job_finger search --config job_finger.config.json --top 15
-python -m job_finger rank --config job_finger.config.json --min-score 60
+uv run job-finger cv
+uv run job-finger search --top 15
+uv run job-finger rank --min-score 60
 ```
 
 Run an ad hoc keyword search without editing the config:
 
 ```bash
-python -m job_finger search --keyword python --keyword fastapi --location Portugal
-python -m job_finger search --related-to backend --remote --results 25
-python -m job_finger search --keywords python fastapi postgres --match all
+uv run job-finger search --keyword python --keyword fastapi --location Portugal
+uv run job-finger search --related-to backend --remote --results 25
+uv run job-finger search --keywords python fastapi postgres --match all
 ```
 
 Filter local data by exact or related terms:
 
 ```bash
-python -m job_finger rank --keyword fastapi
-python -m job_finger rank --related-to ai --min-score 55
-python -m job_finger rank --published-from 2026-06-01 --published-to 2026-06-26
+uv run job-finger rank --keyword fastapi
+uv run job-finger rank --related-to ai --min-score 55
+uv run job-finger rank --published-from 2026-06-01 --published-to 2026-06-26
+uv run job-finger rank --exclude-keyword sap --exclude-scope content
+uv run job-finger rank --work-mode hybrid --seniority senior --min-salary 40000
+uv run job-finger rank --min-cv-matches 2 --max-cv-gaps 3 --no-negative
+uv run job-finger rank --sort newest
 ```
 
 Related groups are configurable under `related_keyword_groups` in
 `job_finger.config.json`. Defaults include backend, frontend, fullstack, data,
 ai, devops, security, qa, product, and mobile.
 
-The default local data layout is intentionally flat:
+The user-facing workspace is intentionally small:
 
 ```plaintext
-job_finger_data/
-  scrapes.jsonl
-  jobs.jsonl
-  applications.jsonl
+workspace/
+  cv.pdf                  <- put your CV here
+  cv.md                   <- generated from the PDF
+  cv_profile.json         <- structured CV signals generated from cv.md
+  config.json             <- your profile and searches
+  observation_template.md <- notes template for the UI
+  cover_letter_template.md
+  data/
+    jobs.jsonl
+    scrapes.jsonl
+    applications.jsonl
 ```
 
 CSV is created only when explicitly requested:
 
 ```bash
-python -m job_finger rank --csv exports/jobs.csv
+uv run job-finger rank --csv workspace/exports/jobs.csv
 ```
 
 Track an application:
 
 ```bash
-python -m job_finger track in-example --status applied --notes "Applied with backend CV"
+uv run job-finger track in-example --status applied --notes "Applied with backend CV"
 ```
 
 Start the local UI:
 
 ```bash
-python -m job_finger ui
+uv run job-finger ui
 ```
 
-The UI reads `job_finger_data`, runs keyword searches, filters the local job
-list, shows full post data, and displays application history. To customize the
-observations template used by the UI, create:
-
-```plaintext
-job_finger_data/observation_template.md
-```
+The UI reads `workspace/data`, runs keyword searches, filters the local job
+list, shows salary/work-mode/seniority/type/date when captured, and displays
+application history. Each job detail has a Match tab with CV matches, likely
+gaps, detected skills, application suggestions, and a deterministic cover-letter
+draft. Use `Save Brief` in that tab to write a Markdown prep file into
+`workspace/briefs/`. Customize UI observations in
+`workspace/observation_template.md`.
+The list view also includes summary counters and quick actions to save, ignore,
+or generate a brief directly from a listing.
 
 Generate a prep brief for a ranked job:
 
 ```bash
-python -m job_finger brief in-example --out briefs/in-example.md
+uv run job-finger brief in-example --out workspace/briefs/in-example.md
 ```
 
 The `estimated_fit_probability` value is an explainable fit proxy, not a

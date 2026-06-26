@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from job_finger.resume import extract_resume_keywords
 from job_finger.search_terms import DEFAULT_RELATED_KEYWORD_GROUPS, unique_terms
 
 
-DEFAULT_CONFIG_PATH = Path("job_finger.config.json")
+DEFAULT_WORKSPACE_PATH = Path("workspace")
+DEFAULT_CONFIG_PATH = DEFAULT_WORKSPACE_PATH / "config.json"
 
 
 def _string_list(value: Any) -> list[str]:
@@ -40,6 +42,9 @@ class UserProfile:
     minimum_salary_eur: int | None = None
     languages: list[str] = field(default_factory=list)
     resume_path: str | None = None
+    resume_keywords: list[str] = field(default_factory=list)
+    resume_profile_path: str | None = None
+    resume_profile: dict[str, Any] = field(default_factory=dict)
     cover_letter_template_path: str | None = None
 
     @classmethod
@@ -61,6 +66,9 @@ class UserProfile:
             minimum_salary_eur=_optional_int(data.get("minimum_salary_eur")),
             languages=_string_list(data.get("languages")),
             resume_path=data.get("resume_path"),
+            resume_keywords=_string_list(data.get("resume_keywords")),
+            resume_profile_path=data.get("resume_profile_path"),
+            resume_profile=dict(data.get("resume_profile", {})),
             cover_letter_template_path=data.get("cover_letter_template_path"),
         )
 
@@ -141,7 +149,7 @@ class SearchSpec:
 class JobFingerConfig:
     profile: UserProfile
     searches: list[SearchSpec]
-    storage_path: str = "job_finger_data"
+    storage_path: str = "data"
     related_keyword_groups: dict[str, list[str]] = field(default_factory=dict)
     source_path: Path | None = None
 
@@ -152,10 +160,12 @@ class JobFingerConfig:
         searches = [SearchSpec.from_dict(item) for item in data.get("searches", [])]
         if not searches:
             raise ValueError("Config must contain at least one search in 'searches'.")
+        profile = UserProfile.from_dict(data.get("profile"))
+        profile = _load_resume_keywords(profile, source_path)
         return cls(
-            profile=UserProfile.from_dict(data.get("profile")),
+            profile=profile,
             searches=searches,
-            storage_path=str(data.get("storage_path", "job_finger_data")),
+            storage_path=str(data.get("storage_path", "data")),
             related_keyword_groups={
                 str(key): unique_terms(value)
                 for key, value in data.get("related_keyword_groups", {}).items()
@@ -187,9 +197,85 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> JobFingerConfig:
     return JobFingerConfig.from_dict(data, source_path=config_path)
 
 
+def _load_resume_keywords(
+    profile: UserProfile, source_path: Path | None
+) -> UserProfile:
+    resume_profile = _load_resume_profile(profile, source_path)
+    if not profile.resume_path:
+        return replace(profile, resume_profile=resume_profile)
+    resume_path = _resolve_user_file(profile.resume_path, source_path)
+    if not resume_path.exists() or resume_path.suffix.lower() == ".pdf":
+        return replace(profile, resume_profile=resume_profile)
+    text = resume_path.read_text(encoding="utf-8-sig")
+    keywords = unique_terms(
+        [
+            *profile.resume_keywords,
+            *_string_list(resume_profile.get("keywords")),
+            *extract_resume_keywords(
+                text,
+                extra_terms=[
+                    *profile.must_have_keywords,
+                    *profile.nice_to_have_keywords,
+                    *profile.target_titles,
+                    *_string_list(resume_profile.get("titles")),
+                ],
+            ),
+        ]
+    )
+    target_titles = unique_terms(
+        [
+            *profile.target_titles,
+            *_string_list(resume_profile.get("titles")),
+        ]
+    )
+    languages = unique_terms(
+        [
+            *profile.languages,
+            *_string_list(resume_profile.get("languages")),
+        ]
+    )
+    return replace(
+        profile,
+        resume_keywords=keywords,
+        target_titles=target_titles,
+        languages=languages,
+        resume_profile=resume_profile,
+    )
+
+
+def _load_resume_profile(
+    profile: UserProfile, source_path: Path | None
+) -> dict[str, Any]:
+    explicit_path = profile.resume_profile_path
+    if explicit_path:
+        profile_path = _resolve_user_file(explicit_path, source_path)
+    elif profile.resume_path:
+        profile_path = _resolve_user_file(profile.resume_path, source_path).with_name(
+            "cv_profile.json"
+        )
+    elif source_path:
+        profile_path = source_path.parent / "cv_profile.json"
+    else:
+        return dict(profile.resume_profile)
+    if not profile_path.exists():
+        return dict(profile.resume_profile)
+    with profile_path.open("r", encoding="utf-8-sig") as file:
+        loaded = json.load(file)
+    if not isinstance(loaded, dict):
+        return dict(profile.resume_profile)
+    return {**profile.resume_profile, **loaded}
+
+
+def _resolve_user_file(path: str, source_path: Path | None) -> Path:
+    user_path = Path(path)
+    if user_path.is_absolute() or not source_path:
+        return user_path
+    return source_path.parent / user_path
+
+
 def example_config() -> dict[str, Any]:
     return {
-        "storage_path": "job_finger_data",
+        "storage_path": "data",
         "related_keyword_groups": DEFAULT_RELATED_KEYWORD_GROUPS,
         "profile": {
             "name": "Your Name",
@@ -215,7 +301,9 @@ def example_config() -> dict[str, Any]:
             "remote_preference": "remote_or_hybrid",
             "minimum_salary_eur": 35000,
             "languages": ["English", "Portuguese"],
-            "resume_path": "resume.md",
+            "resume_path": "cv.md",
+            "resume_keywords": [],
+            "resume_profile_path": "cv_profile.json",
             "cover_letter_template_path": "cover_letter_template.md",
         },
         "searches": [
@@ -256,4 +344,43 @@ def write_example_config(
     with config_path.open("w", encoding="utf-8") as file:
         json.dump(example_config(), file, indent=2)
         file.write("\n")
+    ensure_workspace_files(config_path)
     return config_path
+
+
+def ensure_workspace_files(config_path: str | Path = DEFAULT_CONFIG_PATH) -> Path:
+    config_path = Path(config_path)
+    workspace = config_path.parent
+    for folder in ("data", "briefs", "exports"):
+        (workspace / folder).mkdir(parents=True, exist_ok=True)
+    _write_if_missing(
+        workspace / "observation_template.md",
+        "\n".join(
+            [
+                "Status:",
+                "Last applied:",
+                "Next action:",
+                "Notes:",
+                "",
+            ]
+        ),
+    )
+    _write_if_missing(
+        workspace / "cover_letter_template.md",
+        "\n".join(
+            [
+                "Use one short paragraph for why this company/role.",
+                "Use one concrete achievement that matches the job requirements.",
+                "Close with availability and location/work-mode fit.",
+                "",
+            ]
+        ),
+    )
+    return workspace
+
+
+def _write_if_missing(path: Path, text: str) -> None:
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")

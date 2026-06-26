@@ -17,8 +17,14 @@ def build_application_brief(job: Mapping[str, Any], profile: UserProfile) -> str
         job.get("missing_must_haves", job.get("missing_must_haves_json"))
     )
     reasons = _json_list(job.get("reasons", job.get("reasons_json")))
+    skills = _json_list(job.get("skills"))
+    cv_matches = _json_list(job.get("cv_matched_keywords"))
+    cv_gaps = _json_list(job.get("cv_missing_keywords"))
+    suggestions = _json_list(job.get("application_suggestions"))
+    explanation = _json_list(job.get("match_explanation"))
+    cover_letter = str(job.get("cover_letter_draft") or "").strip()
 
-    resume_focus = matched[:8] or profile.must_have_keywords[:8]
+    resume_focus = cv_matches[:8] or matched[:8] or profile.must_have_keywords[:8]
     cover_letter_angles = [
         f"Open with direct interest in {title} at {company}.",
         "Use one concrete project or metric that proves the strongest matched skill.",
@@ -36,14 +42,30 @@ def build_application_brief(job: Mapping[str, Any], profile: UserProfile) -> str
         f"- Fit score: {score}",
         f"- Estimated fit probability: {probability}%",
         f"- Status: {job.get('application_status', 'new')}",
+        f"- Work mode: {job.get('work_mode') or 'unknown'}",
+        f"- Seniority: {job.get('seniority') or 'unknown'}",
+        f"- Salary: {job.get('salary_label') or 'not shown'}",
         f"- URL: {job.get('job_url_direct') or job.get('job_url') or ''}",
         "",
-        "## Why It Ranked This Way",
+        "## Match Explanation",
         "",
     ]
+    lines.extend(f"- {item}" for item in explanation[:10])
+    if not explanation:
+        lines.append("- No explicit CV/job match explanation was recorded.")
+
+    lines.extend(["", "## Why It Ranked This Way", ""])
     lines.extend(f"- {reason}" for reason in reasons[:10])
     if not reasons:
         lines.append("- No detailed ranking reasons were recorded.")
+
+    if skills:
+        lines.extend(["", "## Skills Detected In Job", ""])
+        lines.extend(f"- {item}" for item in skills[:15])
+
+    if cv_matches:
+        lines.extend(["", "## CV Matches", ""])
+        lines.extend(f"- {item}" for item in cv_matches[:15])
 
     lines.extend(["", "## Resume Emphasis", ""])
     lines.extend(f"- {item}" for item in resume_focus)
@@ -56,6 +78,17 @@ def build_application_brief(job: Mapping[str, Any], profile: UserProfile) -> str
     if missing:
         lines.extend(["", "## Missing Or Weak Signals", ""])
         lines.extend(f"- {item}" for item in missing)
+
+    if cv_gaps:
+        lines.extend(["", "## CV Gaps To Handle Carefully", ""])
+        lines.extend(f"- {item}" for item in cv_gaps[:12])
+
+    if suggestions:
+        lines.extend(["", "## Application Suggestions", ""])
+        lines.extend(f"- {item}" for item in suggestions[:10])
+
+    if cover_letter:
+        lines.extend(["", "## Cover Letter Draft", "", cover_letter])
 
     return "\n".join(lines).strip() + "\n"
 

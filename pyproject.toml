@@ -2,6 +2,32 @@
 requires = [ "poetry-core",]
 build-backend = "poetry.core.masonry.api"
 
+[project]
+name = "python-jobspy"
+version = "1.1.82"
+description = "Job scraper for LinkedIn, Indeed, Glassdoor, ZipRecruiter & Bayt"
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+authors = [
+    { name = "Cullen Watson", email = "cullen@cullenwatson.com" },
+    { name = "Zachary Hampton", email = "zachary@zacharysproducts.com" },
+]
+keywords = [ "jobs-scraper", "linkedin", "indeed", "glassdoor", "ziprecruiter", "bayt", "naukri"]
+dependencies = [
+    "requests>=2.31.0,<3",
+    "beautifulsoup4>=4.12.2,<5",
+    "pandas>=2.1.0",
+    "numpy>=1.26.0",
+    "pydantic>=2.3.0,<3",
+    "tls-client>=1.0.1,<2",
+    "markdownify>=1.1.0,<2",
+    "regex>=2024.4.28",
+    "markitdown[pdf]>=0.1.6,<0.2",
+]
+
+[project.scripts]
+job-finger = "job_finger.cli:main"
+
 [tool.poetry]
 name = "python-jobspy"
 version = "1.1.82"
@@ -31,6 +57,7 @@ pydantic = "^2.3.0"
 tls-client = "^1.0.1"
 markdownify = "^1.1.0"
 regex = "^2024.4.28"
+markitdown = {extras = ["pdf"], version = "^0.1.6"}
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"

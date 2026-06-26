@@ -158,18 +158,35 @@ def filter_rows_by_terms(
     rows: Iterable[Mapping[str, Any]],
     terms: Iterable[str],
     match: str = "any",
+    scope: str = "all",
 ) -> list[dict[str, Any]]:
     normalized_terms = [normalize_text(term) for term in terms if normalize_text(term)]
     if not normalized_terms:
         return [dict(row) for row in rows]
     filtered = []
     for row in rows:
-        text = _row_text(row)
+        text = _row_text(row, scope=scope)
         if match == "all":
             keep = all(term in text for term in normalized_terms)
         else:
             keep = any(term in text for term in normalized_terms)
         if keep:
+            filtered.append(dict(row))
+    return filtered
+
+
+def filter_rows_excluding_terms(
+    rows: Iterable[Mapping[str, Any]],
+    terms: Iterable[str],
+    scope: str = "all",
+) -> list[dict[str, Any]]:
+    normalized_terms = [normalize_text(term) for term in terms if normalize_text(term)]
+    if not normalized_terms:
+        return [dict(row) for row in rows]
+    filtered = []
+    for row in rows:
+        text = _row_text(row, scope=scope)
+        if not any(term in text for term in normalized_terms):
             filtered.append(dict(row))
     return filtered
 
@@ -212,18 +229,31 @@ def _looks_like_query_expression(value: str) -> bool:
     return any(operator in value for operator in (" OR ", " AND ", "(", ")", '"'))
 
 
-def _row_text(row: Mapping[str, Any]) -> str:
-    fields = [
-        "title",
-        "company",
-        "location",
-        "description",
-        "company_industry",
-        "job_type",
-        "recommendation",
-        "matched_keywords",
-        "missing_must_haves",
-        "reasons",
-        "raw_job",
-    ]
+def _row_text(row: Mapping[str, Any], scope: str = "all") -> str:
+    if scope == "title":
+        fields = ["title"]
+    elif scope == "content":
+        fields = [
+            "description",
+            "company_industry",
+            "job_type",
+            "matched_keywords",
+            "missing_must_haves",
+            "reasons",
+            "raw_job",
+        ]
+    else:
+        fields = [
+            "title",
+            "company",
+            "location",
+            "description",
+            "company_industry",
+            "job_type",
+            "recommendation",
+            "matched_keywords",
+            "missing_must_haves",
+            "reasons",
+            "raw_job",
+        ]
     return normalize_text(" ".join(str(row.get(field, "")) for field in fields))
