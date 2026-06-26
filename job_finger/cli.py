@@ -5,9 +5,20 @@ import json
 from pathlib import Path
 from typing import Sequence
 
-from job_finger.config import DEFAULT_CONFIG_PATH, load_config, write_example_config
+from job_finger.config import (
+    DEFAULT_CONFIG_PATH,
+    SearchSpec,
+    load_config,
+    write_example_config,
+)
 from job_finger.drafts import write_application_brief
 from job_finger.pipeline import run_searches
+from job_finger.search_terms import (
+    build_keyword_query,
+    expand_related_topics,
+    filter_rows_by_terms,
+    unique_terms,
+)
 from job_finger.storage import (
     export_ranked_csv,
     get_job_with_latest_score,
@@ -37,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser = subparsers.add_parser("search", help="scrape, score, and store jobs")
     add_config_lake_args(search_parser)
     search_parser.add_argument("--search", action="append", dest="searches")
+    add_keyword_args(search_parser)
+    add_ad_hoc_search_args(search_parser)
     search_parser.add_argument("--dry-run", action="store_true")
     search_parser.add_argument("--top", type=int, default=10)
     search_parser.set_defaults(func=cmd_search)
@@ -47,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     rank_parser.add_argument("--min-score", type=float, default=0)
     rank_parser.add_argument("--status")
     rank_parser.add_argument("--csv")
+    add_keyword_args(rank_parser)
     rank_parser.set_defaults(func=cmd_rank)
 
     track_parser = subparsers.add_parser("track", help="update application status")
@@ -91,6 +105,25 @@ def add_config_lake_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lake")
 
 
+def add_keyword_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--keyword", action="append", default=[])
+    parser.add_argument("--keywords", nargs="+", default=[])
+    parser.add_argument("--related-to", action="append", default=[])
+    parser.add_argument("--match", choices=["any", "all"], default="any")
+
+
+def add_ad_hoc_search_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--name")
+    parser.add_argument("--site", action="append", dest="sites")
+    parser.add_argument("--location")
+    parser.add_argument("--country", default="Portugal")
+    parser.add_argument("--results", type=int)
+    parser.add_argument("--hours-old", type=int)
+    parser.add_argument("--remote", action="store_true")
+    parser.add_argument("--job-type")
+    parser.add_argument("--no-linkedin-description", action="store_true")
+
+
 def cmd_init(args) -> int:
     path = write_example_config(args.config, force=args.force)
     print(f"Wrote {path}")
@@ -99,9 +132,11 @@ def cmd_init(args) -> int:
 
 def cmd_search(args) -> int:
     config = load_config(args.config)
+    ad_hoc_search = build_ad_hoc_search_spec(args, config)
     results = run_searches(
         config,
         search_names=args.searches,
+        search_specs=[ad_hoc_search] if ad_hoc_search else None,
         lake_path=args.lake,
         dry_run=args.dry_run,
     )
@@ -118,15 +153,65 @@ def cmd_search(args) -> int:
 def cmd_rank(args) -> int:
     config = load_config(args.config)
     lake_path = config.resolve_storage_path(args.lake)
+    keyword_terms = collect_keyword_terms(args, config)
+    fetch_limit = 100000 if keyword_terms else args.limit
     rows = list_ranked_jobs(
-        lake_path, limit=args.limit, min_score=args.min_score, status=args.status
+        lake_path, limit=fetch_limit, min_score=args.min_score, status=args.status
     )
+    if keyword_terms:
+        rows = filter_rows_by_terms(rows, keyword_terms, match=args.match)
+        rows = rows[: args.limit]
     if args.csv:
         path = export_ranked_csv(rows, args.csv)
         print(f"Wrote {path}")
     else:
         _print_rows(rows)
     return 0
+
+
+def build_ad_hoc_search_spec(args, config) -> SearchSpec | None:
+    keywords = collect_raw_keywords(args)
+    related_to = unique_terms(args.related_to)
+    if not keywords and not related_to:
+        return None
+    query, focus_terms = build_keyword_query(
+        keywords=keywords,
+        related_to=related_to,
+        groups=config.related_keyword_groups,
+        match=args.match,
+    )
+    required_keywords = keywords if args.match == "all" else []
+    name_parts = [*(keywords[:3]), *(related_to[:2])]
+    name = args.name or f"ad-hoc-{'-'.join(name_parts) or 'keywords'}"
+    return SearchSpec(
+        name=name,
+        search_term=query,
+        location=args.location or config.profile.base_location or "Portugal",
+        site_name=args.sites or ["indeed", "linkedin"],
+        results_wanted=args.results or 50,
+        hours_old=args.hours_old if args.hours_old is not None else 168,
+        country_indeed=args.country,
+        is_remote=args.remote,
+        job_type=args.job_type,
+        description_format="plain",
+        linkedin_fetch_description=not args.no_linkedin_description,
+        focus_keywords=focus_terms,
+        required_keywords=required_keywords,
+        related_to=related_to,
+    )
+
+
+def collect_keyword_terms(args, config) -> list[str]:
+    return unique_terms(
+        [
+            *collect_raw_keywords(args),
+            *expand_related_topics(args.related_to, config.related_keyword_groups),
+        ]
+    )
+
+
+def collect_raw_keywords(args) -> list[str]:
+    return unique_terms([*args.keyword, *args.keywords])
 
 
 def cmd_track(args) -> int:

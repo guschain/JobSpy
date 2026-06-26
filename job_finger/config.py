@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from job_finger.search_terms import DEFAULT_RELATED_KEYWORD_GROUPS, unique_terms
+
 
 DEFAULT_CONFIG_PATH = Path("job_finger.config.json")
 
@@ -79,6 +81,9 @@ class SearchSpec:
     easy_apply: bool | None = None
     description_format: str = "plain"
     linkedin_fetch_description: bool = True
+    focus_keywords: list[str] = field(default_factory=list)
+    required_keywords: list[str] = field(default_factory=list)
+    related_to: list[str] = field(default_factory=list)
     extra_scrape_kwargs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -100,6 +105,9 @@ class SearchSpec:
             linkedin_fetch_description=bool(
                 data.get("linkedin_fetch_description", True)
             ),
+            focus_keywords=_string_list(data.get("focus_keywords")),
+            required_keywords=_string_list(data.get("required_keywords")),
+            related_to=_string_list(data.get("related_to")),
             extra_scrape_kwargs=dict(data.get("extra_scrape_kwargs", {})),
         )
 
@@ -134,6 +142,7 @@ class JobFingerConfig:
     profile: UserProfile
     searches: list[SearchSpec]
     storage_path: str = "job_finger_lake"
+    related_keyword_groups: dict[str, list[str]] = field(default_factory=dict)
     source_path: Path | None = None
 
     @classmethod
@@ -147,6 +156,10 @@ class JobFingerConfig:
             profile=UserProfile.from_dict(data.get("profile")),
             searches=searches,
             storage_path=str(data.get("storage_path", "job_finger_lake")),
+            related_keyword_groups={
+                str(key): unique_terms(value)
+                for key, value in data.get("related_keyword_groups", {}).items()
+            },
             source_path=source_path,
         )
 
@@ -177,6 +190,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> JobFingerConfig:
 def example_config() -> dict[str, Any]:
     return {
         "storage_path": "job_finger_lake",
+        "related_keyword_groups": DEFAULT_RELATED_KEYWORD_GROUPS,
         "profile": {
             "name": "Your Name",
             "base_location": "Portugal",

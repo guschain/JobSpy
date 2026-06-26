@@ -167,12 +167,17 @@ def _title_score(title: str, text: str, target_titles: list[str]) -> float | Non
         target_tokens = set(normalize_text(target).split())
         if not target_tokens:
             continue
-        best_overlap = max(best_overlap, len(title_tokens & target_tokens) / len(target_tokens))
+        best_overlap = max(
+            best_overlap, len(title_tokens & target_tokens) / len(target_tokens)
+        )
     return min(best_overlap, 0.75)
 
 
 def _location_score(
-    job: Mapping[str, Any], text: str, preferred_locations: list[str], remote_preference: str
+    job: Mapping[str, Any],
+    text: str,
+    preferred_locations: list[str],
+    remote_preference: str,
 ) -> float | None:
     wants_remote = remote_preference in {"remote", "remote_or_hybrid", "hybrid"}
     is_remote = _truthy(job.get("is_remote")) or " remote " in f" {text} "
@@ -215,7 +220,11 @@ def _recommendation(score: float) -> str:
 
 
 def score_job(
-    job: Mapping[str, Any], profile: UserProfile, today: date | None = None
+    job: Mapping[str, Any],
+    profile: UserProfile,
+    today: date | None = None,
+    search_focus_keywords: list[str] | None = None,
+    search_required_keywords: list[str] | None = None,
 ) -> ScoreBreakdown:
     text = _job_text(job)
     title = normalize_text(job.get("title"))
@@ -266,9 +275,34 @@ def score_job(
         18,
         "Role title aligns with target titles",
     )
+    search_matches = _matches(text, search_focus_keywords or [])
+    add_component(
+        "search_focus_keywords",
+        len(search_matches) / len(search_focus_keywords)
+        if search_focus_keywords
+        else None,
+        12,
+        f"Matched search focus keywords: {', '.join(search_matches)}",
+    )
+    required_matches = _matches(text, search_required_keywords or [])
+    missing_required = [
+        keyword
+        for keyword in search_required_keywords or []
+        if keyword not in required_matches
+    ]
+    add_component(
+        "required_search_keywords",
+        len(required_matches) / len(search_required_keywords)
+        if search_required_keywords
+        else None,
+        14,
+        f"Matched required search keywords: {', '.join(required_matches)}",
+    )
     add_component(
         "location",
-        _location_score(job, text, profile.preferred_locations, profile.remote_preference),
+        _location_score(
+            job, text, profile.preferred_locations, profile.remote_preference
+        ),
         12,
         "Location or remote setup aligns with preferences",
     )
@@ -308,11 +342,22 @@ def score_job(
     if blacklisted:
         penalties.append(f"Blacklisted company match: {', '.join(blacklisted)}")
 
-    penalty_points = min(30, len(avoid_matches) * 12) + (35 if blacklisted else 0)
+    if missing_required:
+        penalties.append(
+            f"Missing required search keywords: {', '.join(missing_required)}"
+        )
+
+    penalty_points = (
+        min(30, len(avoid_matches) * 12)
+        + (35 if blacklisted else 0)
+        + min(20, len(missing_required) * 8)
+    )
     final_score = max(0.0, min(100.0, raw_score - penalty_points))
     estimated_probability = max(5, min(95, round(final_score)))
 
-    matched_keywords = sorted(set(must_matches + nice_matches))
+    matched_keywords = sorted(
+        set(must_matches + nice_matches + search_matches + required_matches)
+    )
     if missing_must:
         reasons.append(f"Missing must-have keywords: {', '.join(missing_must)}")
     if penalties:

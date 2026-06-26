@@ -211,6 +211,25 @@ python -m job_finger search --config job_finger.config.json --top 15
 python -m job_finger rank --config job_finger.config.json --min-score 60
 ```
 
+Run an ad hoc keyword search without editing the config:
+
+```bash
+python -m job_finger search --keyword python --keyword fastapi --location Portugal
+python -m job_finger search --related-to backend --remote --results 25
+python -m job_finger search --keywords python fastapi postgres --match all
+```
+
+Filter the local lake by exact or related terms:
+
+```bash
+python -m job_finger rank --keyword fastapi
+python -m job_finger rank --related-to ai --min-score 55
+```
+
+Related groups are configurable under `related_keyword_groups` in
+`job_finger.config.json`. Defaults include backend, frontend, fullstack, data,
+ai, devops, security, qa, product, and mobile.
+
 The default local lake layout is:
 
 ```plaintext

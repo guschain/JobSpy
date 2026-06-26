@@ -8,6 +8,7 @@ from pathlib import Path
 from job_finger.config import UserProfile
 from job_finger.pipeline import RankedJob
 from job_finger.scoring import score_job
+from job_finger.search_terms import build_keyword_query, filter_rows_by_terms
 from job_finger.storage import JobLake, list_ranked_jobs, update_application
 
 
@@ -48,6 +49,53 @@ class ScoringTests(unittest.TestCase):
         self.assertGreater(strong.score, weak.score)
         self.assertEqual(strong.recommendation, "priority")
         self.assertIn("python", [item.lower() for item in strong.matched_keywords])
+
+    def test_search_keywords_influence_score(self) -> None:
+        profile = UserProfile(
+            target_titles=["software engineer"],
+            preferred_locations=["Portugal"],
+        )
+        job = {
+            "title": "AI Engineer",
+            "company": "Example",
+            "location": "Portugal",
+            "description": "LLM and RAG systems with Python.",
+            "date_posted": "2026-06-26",
+        }
+
+        score = score_job(
+            job,
+            profile,
+            today=date(2026, 6, 26),
+            search_focus_keywords=["llm", "rag"],
+        )
+
+        self.assertIn("search_focus_keywords", score.components)
+        self.assertIn("llm", [item.lower() for item in score.matched_keywords])
+
+
+class SearchTermTests(unittest.TestCase):
+    def test_related_topic_expands_to_job_board_query(self) -> None:
+        query, terms = build_keyword_query(
+            keywords=["python"],
+            related_to=["backend"],
+            match="any",
+        )
+
+        self.assertIn("python", terms)
+        self.assertIn("backend engineer", terms)
+        self.assertIn(" OR ", query)
+
+    def test_filter_rows_by_keywords(self) -> None:
+        rows = [
+            {"title": "Backend Engineer", "description": "Python and FastAPI"},
+            {"title": "Product Manager", "description": "Roadmap and discovery"},
+        ]
+
+        filtered = filter_rows_by_terms(rows, ["fastapi"], match="any")
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["title"], "Backend Engineer")
 
 
 class StorageTests(unittest.TestCase):

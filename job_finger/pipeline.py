@@ -28,6 +28,7 @@ class SearchResult:
 def run_searches(
     config: JobFingerConfig,
     search_names: list[str] | None = None,
+    search_specs: list[SearchSpec] | None = None,
     lake_path: str | Path | None = None,
     dry_run: bool = False,
 ) -> list[SearchResult]:
@@ -35,7 +36,13 @@ def run_searches(
         config.resolve_storage_path(str(lake_path) if lake_path else None)
     )
     results = []
-    for search in config.selected_searches(search_names):
+    selected_searches = (
+        config.selected_searches(search_names)
+        if search_names is not None
+        else ([] if search_specs else config.searches)
+    )
+    searches = [*selected_searches, *(search_specs or [])]
+    for search in searches:
         results.append(_run_single_search(config, search, lake, dry_run=dry_run))
     return results
 
@@ -48,11 +55,18 @@ def _run_single_search(
 ) -> SearchResult:
     scrape_jobs = _load_scraper()
     dataframe = scrape_jobs(**search.to_scrape_kwargs())
-    records = dataframe.to_dict(orient="records") if hasattr(dataframe, "to_dict") else []
+    records = (
+        dataframe.to_dict(orient="records") if hasattr(dataframe, "to_dict") else []
+    )
 
     ranked: list[RankedJob] = []
     for record in records:
-        breakdown = score_job(record, config.profile)
+        breakdown = score_job(
+            record,
+            config.profile,
+            search_focus_keywords=search.focus_keywords,
+            search_required_keywords=search.required_keywords,
+        )
         job_id = job_fingerprint(record)
         ranked.append(RankedJob(job_id=job_id, job=record, score=breakdown))
 
