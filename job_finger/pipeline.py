@@ -36,11 +36,12 @@ def run_searches(
         config.resolve_storage_path(str(lake_path) if lake_path else None)
     )
     results = []
-    selected_searches = (
-        config.selected_searches(search_names)
-        if search_names is not None
-        else ([] if search_specs else config.searches)
-    )
+    if search_names is None:
+        selected_searches = [] if search_specs else config.searches
+    elif search_names:
+        selected_searches = config.selected_searches(search_names)
+    else:
+        selected_searches = []
     searches = [*selected_searches, *(search_specs or [])]
     for search in searches:
         results.append(_run_single_search(config, search, lake, dry_run=dry_run))

@@ -251,6 +251,20 @@ Track an application:
 python -m job_finger track in-example --status applied --notes "Applied with backend CV"
 ```
 
+Start the local UI:
+
+```bash
+python -m job_finger ui
+```
+
+The UI reads `job_finger_data`, runs keyword searches, filters the local job
+list, shows full post data, and displays application history. To customize the
+observations template used by the UI, create:
+
+```plaintext
+job_finger_data/observation_template.md
+```
+
 Generate a prep brief for a ranked job:
 
 ```bash

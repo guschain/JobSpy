@@ -25,6 +25,7 @@ from job_finger.storage import (
     list_ranked_jobs,
     update_application,
 )
+from job_finger.ui_server import run_ui_server
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -96,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
     brief_parser.add_argument("job_id")
     brief_parser.add_argument("--out")
     brief_parser.set_defaults(func=cmd_brief)
+
+    ui_parser = subparsers.add_parser("ui", help="start the local web UI")
+    add_config_data_args(ui_parser)
+    ui_parser.add_argument("--host", default="127.0.0.1")
+    ui_parser.add_argument("--port", type=int, default=8765)
+    ui_parser.set_defaults(func=cmd_ui)
 
     return parser
 
@@ -243,6 +250,16 @@ def cmd_brief(args) -> int:
     out_path = args.out or f"briefs/{args.job_id}.md"
     path = write_application_brief(dict(row), config.profile, out_path)
     print(f"Wrote {path}")
+    return 0
+
+
+def cmd_ui(args) -> int:
+    run_ui_server(
+        config_path=args.config,
+        data_path=args.data,
+        host=args.host,
+        port=args.port,
+    )
     return 0
 
 

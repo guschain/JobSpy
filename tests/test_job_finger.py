@@ -9,7 +9,13 @@ from job_finger.config import UserProfile
 from job_finger.pipeline import RankedJob
 from job_finger.scoring import score_job
 from job_finger.search_terms import build_keyword_query, filter_rows_by_terms
-from job_finger.storage import JobLake, list_ranked_jobs, update_application
+from job_finger.storage import (
+    JobLake,
+    list_application_events,
+    list_ranked_jobs,
+    update_application,
+)
+from job_finger.ui_server import DEFAULT_OBSERVATION_TEMPLATE, read_observation_template
 
 
 class ScoringTests(unittest.TestCase):
@@ -136,6 +142,7 @@ class StorageTests(unittest.TestCase):
                 notes="Applied with backend CV",
             )
             rows = list_ranked_jobs(data_path, limit=10)
+            events = list_application_events(data_path, "test-1")
             files = sorted(path.name for path in data_path.iterdir() if path.is_file())
             directories = [path for path in data_path.iterdir() if path.is_dir()]
 
@@ -145,7 +152,24 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["job_id"], "test-1")
         self.assertEqual(rows[0]["application_status"], "applied")
+        self.assertTrue(rows[0]["applied_at"])
+        self.assertEqual(len(events), 1)
         self.assertGreater(rows[0]["score"], 0)
+
+    def test_observation_template_can_be_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "job_finger_data"
+            data_path.mkdir()
+            self.assertEqual(
+                read_observation_template(data_path), DEFAULT_OBSERVATION_TEMPLATE
+            )
+            (data_path / "observation_template.md").write_text(
+                "Outcome:\n\nNext action:\n", encoding="utf-8"
+            )
+
+            template = read_observation_template(data_path)
+
+        self.assertIn("Next action", template)
 
 
 if __name__ == "__main__":

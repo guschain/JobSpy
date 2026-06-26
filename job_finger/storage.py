@@ -162,6 +162,9 @@ class JobLake:
         contact_name: str | None = None,
         contact_email: str | None = None,
     ) -> None:
+        now = utc_now()
+        if status == "applied" and applied_at is None:
+            applied_at = now
         event = {
             "event_id": str(uuid.uuid4()),
             "job_id": job_id,
@@ -173,7 +176,7 @@ class JobLake:
             "cover_letter_path": cover_letter_path,
             "contact_name": contact_name,
             "contact_email": contact_email,
-            "updated_at": utc_now(),
+            "updated_at": now,
         }
         with self.application_events_path.open("a", encoding="utf-8") as file:
             file.write(_to_json(event) + "\n")
@@ -215,6 +218,15 @@ def get_job_with_latest_score(
 
 def update_application(data_path: str | Path, **kwargs: Any) -> None:
     JobLake(data_path).update_application(**kwargs)
+
+
+def list_application_events(
+    data_path: str | Path, job_id: str | None = None
+) -> list[dict[str, Any]]:
+    events = _read_jsonl(JobLake(data_path).application_events_path)
+    if job_id is None:
+        return events
+    return [event for event in events if str(event.get("job_id")) == str(job_id)]
 
 
 def export_ranked_csv(rows: Iterable[Mapping[str, Any]], path: str | Path) -> Path:
