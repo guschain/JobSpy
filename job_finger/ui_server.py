@@ -12,10 +12,11 @@ from job_finger.config import (
     DEFAULT_CONFIG_PATH,
     JobFingerConfig,
     SearchSpec,
+    ensure_workspace_files,
     example_config,
     load_config,
 )
-from job_finger.drafts import write_application_brief
+from job_finger.drafts import write_application_brief, write_cover_letter
 from job_finger.pipeline import run_searches
 from job_finger.search_terms import (
     build_keyword_query,
@@ -30,6 +31,8 @@ from job_finger.storage import (
     list_application_events,
     list_ranked_jobs,
     update_application,
+    add_feedback,
+    learned_negative_terms,
 )
 
 
@@ -56,6 +59,7 @@ def run_ui_server(
     host: str = "127.0.0.1",
     port: int = 8765,
 ) -> None:
+    ensure_workspace_files(config_path)
     config = _load_config_or_default(config_path)
     resolved_data_path = config.resolve_storage_path(str(data_path) if data_path else None)
     context = UIServerContext(config=config, data_path=resolved_data_path)
@@ -87,6 +91,15 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/template":
             self._send_json({"template": read_observation_template(self.server_context.data_path)})
             return
+        if parsed.path == "/api/preferences":
+            self._send_json(
+                {
+                    "learned_negative_terms": learned_negative_terms(
+                        self.server_context.data_path
+                    )
+                }
+            )
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
@@ -102,6 +115,9 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/briefs":
             self._handle_brief(self._read_json_body())
+            return
+        if parsed.path == "/api/feedback":
+            self._handle_feedback(self._read_json_body())
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -245,10 +261,60 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
             / "briefs"
             / f"{_safe_filename(job_id)}.md"
         )
+        cover_path = (
+            self.server_context.data_path.parent
+            / "cover_letters"
+            / f"{_safe_filename(job_id)}.md"
+        )
         path = write_application_brief(
             dict(job), self.server_context.config.profile, out_path
         )
-        self._send_json({"ok": True, "path": str(path), "brief": path.read_text(encoding="utf-8")})
+        written_cover = write_cover_letter(
+            dict(job), self.server_context.config.profile, cover_path
+        )
+        self._send_json(
+            {
+                "ok": True,
+                "path": str(path),
+                "cover_letter_path": str(written_cover),
+                "brief": path.read_text(encoding="utf-8"),
+                "cover_letter": written_cover.read_text(encoding="utf-8"),
+            }
+        )
+
+    def _handle_feedback(self, payload: dict[str, Any]) -> None:
+        job_id = str(payload.get("job_id") or "").strip()
+        if not job_id:
+            self._send_json({"error": "job_id is required"}, status=400)
+            return
+        job = get_job_with_latest_score(self.server_context.data_path, job_id)
+        if not job:
+            self._send_json({"error": f"No job found with id {job_id}"}, status=404)
+            return
+        terms = unique_terms(payload.get("negative_terms") or [])
+        notes = payload.get("notes")
+        add_feedback(
+            self.server_context.data_path,
+            job_id=job_id,
+            negative_terms=terms,
+            notes=notes,
+            apply_globally=bool(payload.get("apply_globally", True)),
+        )
+        if payload.get("status"):
+            update_application(
+                self.server_context.data_path,
+                job_id=job_id,
+                status=str(payload.get("status")),
+                notes=notes,
+            )
+        self._send_json(
+            {
+                "ok": True,
+                "learned_negative_terms": learned_negative_terms(
+                    self.server_context.data_path
+                ),
+            }
+        )
 
     def _read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or "0")
@@ -365,6 +431,7 @@ def _list_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ranked_row(item: Any) -> dict[str, Any]:
+    normalized = item.score.analysis.get("normalized", {})
     return {
         "job_id": item.job_id,
         "score": item.score.score,
@@ -376,9 +443,9 @@ def _ranked_row(item: Any) -> dict[str, Any]:
         "location": item.job.get("location"),
         "site": item.job.get("site"),
         "date_posted": item.job.get("date_posted"),
-        "salary_label": salary_label(item.job),
+        "salary_label": normalized.get("salary_label") or salary_label(item.job),
         "work_mode": infer_work_mode_label(item.job),
-        "seniority": item.score.analysis.get("normalized", {}).get("seniority"),
+        "seniority": normalized.get("seniority"),
         "skills": item.score.analysis.get("job_skills", []),
         "cv_matched_keywords": item.score.analysis.get("cv_matched_keywords", []),
         "cv_missing_keywords": item.score.analysis.get("cv_missing_keywords", []),
@@ -423,6 +490,8 @@ def _list_count(value: Any) -> int:
 
 
 def salary_label(row: dict[str, Any]) -> str:
+    if row.get("salary_label"):
+        return str(row.get("salary_label"))
     min_amount = row.get("min_amount")
     max_amount = row.get("max_amount")
     currency = row.get("currency") or ""
@@ -1175,6 +1244,8 @@ INDEX_HTML = r"""<!doctype html>
       };
       const saveBrief = $("saveBrief");
       if (saveBrief) saveBrief.onclick = saveApplicationBrief;
+      const saveFeedback = $("saveFeedback");
+      if (saveFeedback) saveFeedback.onclick = saveNegativeFeedback;
     }
 
     function tabButton(id, label) {
@@ -1210,6 +1281,19 @@ INDEX_HTML = r"""<!doctype html>
             <div class="links">
               <button class="primary" id="saveBrief">Save Brief</button>
               <span class="small" id="briefStatus"></span>
+            </div>
+          </div>
+          <div class="match-panel wide">
+            <h3>Learn From This Rejection</h3>
+            <div class="form-grid">
+              <label class="wide">Negative Terms
+                <input id="feedbackTerms" placeholder="sap, cold calling, unpaid">
+              </label>
+              <label class="wide">Reason
+                <input id="feedbackNotes" placeholder="Why this recommendation was wrong">
+              </label>
+              <button id="saveFeedback">Learn + Ignore</button>
+              <span class="small" id="feedbackStatus"></span>
             </div>
           </div>
         </div>`;
@@ -1271,7 +1355,32 @@ INDEX_HTML = r"""<!doctype html>
           method: "POST",
           body: JSON.stringify({ job_id: state.selectedId }),
         });
-        status.textContent = `Saved ${payload.path}`;
+        status.textContent = `Saved ${payload.path} and ${payload.cover_letter_path}`;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function saveNegativeFeedback() {
+      const status = $("feedbackStatus");
+      const button = $("saveFeedback");
+      button.disabled = true;
+      status.textContent = "Saving";
+      try {
+        const terms = splitTerms($("feedbackTerms").value);
+        const notes = $("feedbackNotes").value;
+        const payload = await api("/api/feedback", {
+          method: "POST",
+          body: JSON.stringify({
+            job_id: state.selectedId,
+            negative_terms: terms,
+            notes,
+            status: "ignored",
+            apply_globally: true,
+          }),
+        });
+        status.textContent = `Learned ${payload.learned_negative_terms.length} term(s)`;
+        await loadJobs();
       } finally {
         button.disabled = false;
       }
@@ -1342,6 +1451,7 @@ INDEX_HTML = r"""<!doctype html>
     $("runSearch").onclick = runSearch;
     $("refresh").onclick = loadJobs;
     function salaryLabel(job) {
+      if (job.salary_label) return job.salary_label;
       const min = job.min_amount;
       const max = job.max_amount;
       const currency = job.currency || "";

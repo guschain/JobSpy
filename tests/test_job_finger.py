@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from job_finger.config import UserProfile, load_config
+from job_finger.drafts import write_cover_letter
 from job_finger.matching import analyze_job_match
 from job_finger.pipeline import RankedJob
 from job_finger.resume import analyze_resume_text, extract_resume_keywords, write_resume_profile
@@ -17,6 +18,8 @@ from job_finger.search_terms import (
 )
 from job_finger.storage import (
     JobLake,
+    add_feedback,
+    learned_negative_terms,
     list_application_events,
     list_ranked_jobs,
     update_application,
@@ -412,6 +415,55 @@ class StorageTests(unittest.TestCase):
             )
 
         self.assertEqual([row["job_id"] for row in rows], ["good-1"])
+
+    def test_learned_negative_terms_affect_no_negative_filter(self) -> None:
+        profile = UserProfile(resume_keywords=["python"])
+        job = {
+            "id": "learned-1",
+            "title": "Backend Engineer",
+            "description": "Python role with SAP integration.",
+            "date_posted": "2026-06-26",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "job_finger_data"
+            JobLake(data_path).save_search_result(
+                search_name="test-search",
+                search_term="backend engineer",
+                location="Portugal",
+                sites=["indeed"],
+                ranked_jobs=[
+                    RankedJob("learned-1", job, score_job(job, profile)),
+                ],
+            )
+            add_feedback(
+                data_path,
+                job_id="learned-1",
+                negative_terms=["SAP"],
+                notes="Not relevant",
+            )
+
+            learned = learned_negative_terms(data_path)
+            rows = list_ranked_jobs(data_path, limit=10, no_negative=True)
+
+        self.assertIn("SAP", learned)
+        self.assertEqual(rows, [])
+
+    def test_cover_letter_can_be_written_separately(self) -> None:
+        job = {
+            "title": "Backend Engineer",
+            "company": "ExampleCo",
+            "cover_letter_draft": "Dear Hiring Team,\n\nCustom draft.\n",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = write_cover_letter(
+                job,
+                UserProfile(resume_keywords=["python"]),
+                Path(temp_dir) / "cover_letters" / "job.md",
+            )
+            text = path.read_text(encoding="utf-8")
+
+        self.assertTrue(path.name.endswith(".md"))
+        self.assertIn("Custom draft", text)
 
     def test_observation_template_can_be_overridden(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -208,6 +208,14 @@ Create a local config:
 uv run job-finger init
 ```
 
+Fast local workflow from the repo root:
+
+```powershell
+.\update-cv.ps1      # reads workspace/cv.pdf through MarkItDown
+.\search-jobs.ps1   # scrapes, dedupes, scores, and writes JSONL files
+.\start-ui.ps1      # opens the local app at http://127.0.0.1:8765/
+```
+
 Put your CV at `workspace/cv.pdf`, convert it with MarkItDown, then edit the
 generated profile in `workspace/config.json`:
 
@@ -245,16 +253,20 @@ The user-facing workspace is intentionally small:
 
 ```plaintext
 workspace/
-  cv.pdf                  <- put your CV here
-  cv.md                   <- generated from the PDF
-  cv_profile.json         <- structured CV signals generated from cv.md
-  config.json             <- your profile and searches
-  observation_template.md <- notes template for the UI
+  cv.pdf                  <- only required input: put your CV PDF here
+  config.json             <- profile, target roles, searches, preferences
+  observation_template.md <- reusable notes template for applications
   cover_letter_template.md
+  cv.md                   <- generated from cv.pdf
+  cv_profile.json         <- generated CV keywords/titles/languages
   data/
-    jobs.jsonl
-    scrapes.jsonl
-    applications.jsonl
+    jobs.jsonl            <- latest deduped listings
+    scrapes.jsonl         <- append-only scrape history
+    applications.jsonl    <- saved/applied/ignored events
+    feedback.jsonl        <- learned negative keywords from bad matches
+  briefs/                 <- generated application prep notes
+  cover_letters/          <- generated standalone cover-letter drafts
+  exports/                <- optional CSV output
 ```
 
 CSV is created only when explicitly requested:
@@ -280,8 +292,8 @@ list, shows salary/work-mode/seniority/type/date when captured, and displays
 application history. Each job detail has a Match tab with CV matches, likely
 gaps, detected skills, application suggestions, and a deterministic cover-letter
 draft. Use `Save Brief` in that tab to write a Markdown prep file into
-`workspace/briefs/`. Customize UI observations in
-`workspace/observation_template.md`.
+`workspace/briefs/` and a standalone draft into `workspace/cover_letters/`.
+Customize UI observations in `workspace/observation_template.md`.
 The list view also includes summary counters and quick actions to save, ignore,
 or generate a brief directly from a listing.
 

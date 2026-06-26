@@ -12,7 +12,7 @@ from job_finger.config import (
     load_config,
     write_example_config,
 )
-from job_finger.drafts import write_application_brief
+from job_finger.drafts import write_application_brief, write_cover_letter
 from job_finger.pipeline import run_searches
 from job_finger.resume import convert_resume_to_markdown, write_resume_profile
 from job_finger.search_terms import (
@@ -123,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_config_data_args(brief_parser)
     brief_parser.add_argument("job_id")
     brief_parser.add_argument("--out")
+    brief_parser.add_argument("--cover-out")
     brief_parser.set_defaults(func=cmd_brief)
 
     ui_parser = subparsers.add_parser("ui", help="start the local web UI")
@@ -193,6 +194,7 @@ def cmd_cv(args) -> int:
 
 
 def cmd_search(args) -> int:
+    ensure_workspace_files(args.config)
     config = load_config(args.config)
     ad_hoc_search = build_ad_hoc_search_spec(args, config)
     results = run_searches(
@@ -213,6 +215,7 @@ def cmd_search(args) -> int:
 
 
 def cmd_rank(args) -> int:
+    ensure_workspace_files(args.config)
     config = load_config(args.config)
     lake_path = config.resolve_storage_path(args.data)
     keyword_terms = collect_keyword_terms(args, config)
@@ -300,6 +303,7 @@ def collect_exclude_terms(args) -> list[str]:
 
 
 def cmd_track(args) -> int:
+    ensure_workspace_files(args.config)
     config = load_config(args.config)
     lake_path = config.resolve_storage_path(args.data)
     update_application(
@@ -319,14 +323,21 @@ def cmd_track(args) -> int:
 
 
 def cmd_brief(args) -> int:
+    ensure_workspace_files(args.config)
     config = load_config(args.config)
     lake_path = config.resolve_storage_path(args.data)
     row = get_job_with_latest_score(lake_path, args.job_id)
     if row is None:
         raise SystemExit(f"No job found with id {args.job_id}")
-    out_path = args.out or f"briefs/{args.job_id}.md"
+    workspace = lake_path.parent
+    out_path = args.out or workspace / "briefs" / f"{args.job_id}.md"
+    cover_out_path = (
+        args.cover_out or workspace / "cover_letters" / f"{args.job_id}.md"
+    )
     path = write_application_brief(dict(row), config.profile, out_path)
+    cover_path = write_cover_letter(dict(row), config.profile, cover_out_path)
     print(f"Wrote {path}")
+    print(f"Wrote {cover_path}")
     return 0
 
 
@@ -334,6 +345,8 @@ def cmd_ui(args) -> int:
     config_path = Path(args.config)
     if not config_path.exists():
         write_example_config(config_path)
+    else:
+        ensure_workspace_files(config_path)
     run_ui_server(
         config_path=args.config,
         data_path=args.data,

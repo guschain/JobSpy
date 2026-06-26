@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from job_finger.matching import normalize_job_fields
+from job_finger.resume import normalize_text
+from job_finger.search_terms import unique_terms
 
 
 def utc_now() -> str:
@@ -52,6 +54,10 @@ class JobLake:
     @property
     def application_events_path(self) -> Path:
         return self.root / "applications.jsonl"
+
+    @property
+    def feedback_path(self) -> Path:
+        return self.root / "feedback.jsonl"
 
     def save_search_result(
         self,
@@ -184,6 +190,32 @@ class JobLake:
             file.write(_to_json(event) + "\n")
         self._merge_job_snapshot([])
 
+    def add_feedback(
+        self,
+        *,
+        job_id: str,
+        negative_terms: Iterable[str] | None = None,
+        notes: str | None = None,
+        apply_globally: bool = True,
+    ) -> None:
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "job_id": job_id,
+            "negative_terms": unique_terms(negative_terms or []),
+            "notes": notes,
+            "apply_globally": apply_globally,
+            "updated_at": utc_now(),
+        }
+        with self.feedback_path.open("a", encoding="utf-8") as file:
+            file.write(_to_json(event) + "\n")
+
+    def learned_negative_terms(self) -> list[str]:
+        terms: list[str] = []
+        for event in _read_jsonl(self.feedback_path):
+            if event.get("apply_globally", True):
+                terms.extend(str(term) for term in event.get("negative_terms") or [])
+        return unique_terms(terms)
+
 
 def list_ranked_jobs(
     data_path: str | Path,
@@ -203,6 +235,7 @@ def list_ranked_jobs(
 ) -> list[dict[str, Any]]:
     store = JobLake(data_path)
     applications = store.load_application_state()
+    learned_negative_terms = store.learned_negative_terms()
     published_from_date = _parse_date(published_from)
     published_to_date = _parse_date(published_to)
     rows: list[dict[str, Any]] = []
@@ -212,6 +245,12 @@ def list_ranked_jobs(
         row["application_status"] = application.get(
             "status", row.get("application_status", "new")
         )
+        learned_matches = _matched_learned_terms(row, learned_negative_terms)
+        if learned_matches:
+            row["learned_negative_keywords"] = learned_matches
+            row["negative_keywords"] = unique_terms(
+                [*(row.get("negative_keywords") or []), *learned_matches]
+            )
         if float(row.get("score") or 0) < min_score:
             continue
         if status and row["application_status"] != status:
@@ -255,6 +294,14 @@ def get_job_with_latest_score(
 
 def update_application(data_path: str | Path, **kwargs: Any) -> None:
     JobLake(data_path).update_application(**kwargs)
+
+
+def add_feedback(data_path: str | Path, **kwargs: Any) -> None:
+    JobLake(data_path).add_feedback(**kwargs)
+
+
+def learned_negative_terms(data_path: str | Path) -> list[str]:
+    return JobLake(data_path).learned_negative_terms()
 
 
 def list_application_events(
@@ -401,7 +448,12 @@ def _sort_key(sort_by: str):
 
 
 def _best_salary(row: Mapping[str, Any]) -> float | None:
-    values = [_safe_float(row.get("max_amount")), _safe_float(row.get("min_amount"))]
+    values = [
+        _safe_float(row.get("salary_max")),
+        _safe_float(row.get("salary_min")),
+        _safe_float(row.get("max_amount")),
+        _safe_float(row.get("min_amount")),
+    ]
     usable = [value for value in values if value is not None]
     return max(usable) if usable else None
 
@@ -412,6 +464,23 @@ def _list_count(value: Any) -> int:
     if value is None or value == "":
         return 0
     return 1
+
+
+def _matched_learned_terms(
+    row: Mapping[str, Any], learned_terms: Iterable[str]
+) -> list[str]:
+    text = normalize_text(
+        " ".join(
+            str(row.get(field) or "")
+            for field in ("title", "company", "location", "description", "raw_job")
+        )
+    )
+    matched = []
+    for term in learned_terms:
+        normalized = normalize_text(term)
+        if normalized and normalized in text:
+            matched.append(term)
+    return unique_terms(matched)
 
 
 def _safe_float(value: Any) -> float | None:

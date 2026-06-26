@@ -102,6 +102,37 @@ def write_application_brief(
     return path
 
 
+def build_cover_letter(job: Mapping[str, Any], profile: UserProfile) -> str:
+    cover_letter = str(job.get("cover_letter_draft") or "").strip()
+    if cover_letter:
+        return cover_letter + "\n"
+    title = job.get("title") or "this role"
+    company = job.get("company") or "your team"
+    matched = _json_list(job.get("cv_matched_keywords")) or _json_list(
+        job.get("matched_keywords")
+    )
+    focus = ", ".join(matched[:5]) or ", ".join(profile.resume_keywords[:5])
+    if not focus:
+        focus = "the requirements described in the posting"
+    return (
+        "Dear Hiring Team,\n\n"
+        f"I am interested in the {title} role at {company}. My background aligns "
+        f"with {focus}, and I would focus the application on concrete delivery "
+        "evidence relevant to the role.\n\n"
+        "I would welcome the chance to discuss how my experience can help your "
+        "team deliver on this position's priorities.\n"
+    )
+
+
+def write_cover_letter(
+    job: Mapping[str, Any], profile: UserProfile, output_path: str | Path
+) -> Path:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(build_cover_letter(job, profile), encoding="utf-8")
+    return path
+
+
 def _json_list(value: Any) -> list[str]:
     if value is None:
         return []
