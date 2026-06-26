@@ -180,6 +180,53 @@ Bayt only uses the search_term parameter currently and searches internationally
 * All the job board endpoints are capped at around 1000 jobs on a given search.  
 * LinkedIn is the most restrictive and usually rate limits around the 10th page with one ip. Proxies are a must basically.
 
+## Job Finger Portugal Layer
+
+This fork adds a separate `job_finger` package on top of JobSpy. The upstream
+scrapers are left intact; Portugal support for the broad boards is already
+available through `country_indeed="Portugal"` and LinkedIn's `location`
+parameter.
+
+The added layer is focused on filtering before applying:
+
+- Portugal-first search defaults for Indeed and LinkedIn
+- explainable fit scoring by skills, title, seniority, location, remote setup,
+  salary, language, and recency
+- SQLite storage for jobs, search runs, scores, application statuses, and
+  generated application documents
+- status tracking for saved, applied, follow-up, interview, offer, rejected, and
+  ignored jobs
+- application briefs with resume emphasis and cover-letter angles
+
+Create a local config:
+
+```bash
+python -m job_finger init --config job_finger.config.json
+```
+
+Edit the generated profile, then scrape and rank:
+
+```bash
+python -m job_finger search --config job_finger.config.json --top 15
+python -m job_finger rank --config job_finger.config.json --min-score 60
+```
+
+Track an application:
+
+```bash
+python -m job_finger track in-example --status applied --notes "Applied with backend CV"
+```
+
+Generate a prep brief for a ranked job:
+
+```bash
+python -m job_finger brief in-example --out briefs/in-example.md
+```
+
+The `estimated_fit_probability` value is an explainable fit proxy, not a
+statistical hiring probability. It is designed to sort the queue and expose why a
+job is worth applying to.
+
 ## Frequently Asked Questions
 
 ---

@@ -12,6 +12,11 @@ readme = "README.md"
 keywords = [ "jobs-scraper", "linkedin", "indeed", "glassdoor", "ziprecruiter", "bayt", "naukri"]
 [[tool.poetry.packages]]
 include = "jobspy"
+[[tool.poetry.packages]]
+include = "job_finger"
+
+[tool.poetry.scripts]
+job-finger = "job_finger.cli:main"
 
 [tool.black]
 line-length = 88
