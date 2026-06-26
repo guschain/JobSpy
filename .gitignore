@@ -8,3 +8,4 @@
 *.pyc
 .env
 dist
+job_finger_data/
