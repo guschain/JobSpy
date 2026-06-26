@@ -101,6 +101,8 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
         limit = _int_query(query, "limit", 100)
         min_score = _float_query(query, "min_score", 0)
         status = _first_query(query, "status") or None
+        published_from = _first_query(query, "published_from") or None
+        published_to = _first_query(query, "published_to") or None
         text_query = _first_query(query, "query")
         keyword_terms = unique_terms(query.get("keyword", []))
         related_terms = expand_related_topics(
@@ -111,6 +113,8 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
             limit=100000 if text_query or keyword_terms or related_terms else limit,
             min_score=min_score,
             status=status,
+            published_from=published_from,
+            published_to=published_to,
         )
         terms = unique_terms([*(keyword_terms or []), *(related_terms or [])])
         if terms:
@@ -286,6 +290,7 @@ def _list_row(row: dict[str, Any]) -> dict[str, Any]:
         "location": row.get("location"),
         "site": row.get("site"),
         "date_posted": row.get("date_posted"),
+        "published_at": row.get("date_posted"),
         "last_applied_at": row.get("applied_at"),
         "observations": row.get("application_notes"),
     }
@@ -434,7 +439,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .filters {
       display: grid;
-      grid-template-columns: 1fr 120px 92px;
+      grid-template-columns: 1fr 120px 92px 130px 130px;
       gap: 8px;
       padding: 12px;
       border-bottom: 1px solid var(--line);
@@ -631,6 +636,8 @@ INDEX_HTML = r"""<!doctype html>
           </select>
         </label>
         <label>Min Score <input id="minScore" type="number" min="0" max="100" value="0"></label>
+        <label>Published From <input id="publishedFrom" type="date"></label>
+        <label>Published To <input id="publishedTo" type="date"></label>
       </div>
       <div id="jobList" class="job-list"></div>
     </aside>
@@ -661,9 +668,13 @@ INDEX_HTML = r"""<!doctype html>
       const query = $("localQuery").value.trim();
       const status = $("statusFilter").value;
       const minScore = $("minScore").value;
+      const publishedFrom = $("publishedFrom").value;
+      const publishedTo = $("publishedTo").value;
       if (query) params.set("query", query);
       if (status) params.set("status", status);
       if (minScore) params.set("min_score", minScore);
+      if (publishedFrom) params.set("published_from", publishedFrom);
+      if (publishedTo) params.set("published_to", publishedTo);
       params.set("limit", "250");
       const data = await api(`/api/jobs?${params.toString()}`);
       state.jobs = data.jobs;
@@ -697,6 +708,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="status-line">
               <span class="pill">${escapeHtml(job.status || "new")}</span>
               <span class="pill">${escapeHtml(job.site || "")}</span>
+              ${job.published_at ? `<span class="pill">Published ${escapeHtml(job.published_at)}</span>` : ""}
               ${job.last_applied_at ? `<span class="pill">Applied ${escapeHtml(formatDate(job.last_applied_at))}</span>` : ""}
             </div>
           </div>`;
@@ -723,6 +735,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="meta">${escapeHtml(job.company || "")} · ${escapeHtml(job.location || "")} · Score ${escapeHtml(job.score ?? "")}</div>
           <div class="status-line">
             <span class="pill">${escapeHtml(job.application_status || "new")}</span>
+            ${job.date_posted ? `<span class="pill">Published ${escapeHtml(job.date_posted)}</span>` : ""}
             ${payload.last_applied_at ? `<span class="pill">Last applied ${escapeHtml(formatDate(payload.last_applied_at))}</span>` : ""}
             ${job.next_action_at ? `<span class="pill">Next ${escapeHtml(job.next_action_at)}</span>` : ""}
           </div>
@@ -840,7 +853,7 @@ INDEX_HTML = r"""<!doctype html>
 
     $("runSearch").onclick = runSearch;
     $("refresh").onclick = loadJobs;
-    ["localQuery", "statusFilter", "minScore"].forEach(id => {
+    ["localQuery", "statusFilter", "minScore", "publishedFrom", "publishedTo"].forEach(id => {
       $(id).addEventListener("change", loadJobs);
       $(id).addEventListener("keyup", event => { if (event.key === "Enter") loadJobs(); });
     });

@@ -60,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     rank_parser.add_argument("--limit", type=int, default=25)
     rank_parser.add_argument("--min-score", type=float, default=0)
     rank_parser.add_argument("--status")
+    rank_parser.add_argument("--published-from")
+    rank_parser.add_argument("--published-to")
     rank_parser.add_argument("--csv")
     add_keyword_args(rank_parser)
     rank_parser.set_defaults(func=cmd_rank)
@@ -164,7 +166,12 @@ def cmd_rank(args) -> int:
     keyword_terms = collect_keyword_terms(args, config)
     fetch_limit = 100000 if keyword_terms else args.limit
     rows = list_ranked_jobs(
-        lake_path, limit=fetch_limit, min_score=args.min_score, status=args.status
+        lake_path,
+        limit=fetch_limit,
+        min_score=args.min_score,
+        status=args.status,
+        published_from=args.published_from,
+        published_to=args.published_to,
     )
     if keyword_terms:
         rows = filter_rows_by_terms(rows, keyword_terms, match=args.match)

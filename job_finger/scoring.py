@@ -91,9 +91,13 @@ def _parse_date(value: Any) -> date | None:
     if isinstance(value, date):
         return value
     raw = str(value)
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(raw[: len(fmt)], fmt).date()
+            return datetime.strptime(raw, fmt).date()
         except ValueError:
             continue
     return None

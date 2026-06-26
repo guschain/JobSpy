@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -188,9 +188,13 @@ def list_ranked_jobs(
     limit: int = 25,
     min_score: float = 0,
     status: str | None = None,
+    published_from: str | date | None = None,
+    published_to: str | date | None = None,
 ) -> list[dict[str, Any]]:
     store = JobLake(data_path)
     applications = store.load_application_state()
+    published_from_date = _parse_date(published_from)
+    published_to_date = _parse_date(published_to)
     rows: list[dict[str, Any]] = []
     for row in store.read_ranked_snapshot():
         row = dict(row)
@@ -201,6 +205,15 @@ def list_ranked_jobs(
         if float(row.get("score") or 0) < min_score:
             continue
         if status and row["application_status"] != status:
+            continue
+        posted_date = _parse_date(row.get("date_posted"))
+        if published_from_date and (
+            posted_date is None or posted_date < published_from_date
+        ):
+            continue
+        if published_to_date and (
+            posted_date is None or posted_date > published_to_date
+        ):
             continue
         rows.append(row)
     rows.sort(key=lambda row: float(row.get("score") or 0), reverse=True)
@@ -319,6 +332,28 @@ def _clean_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_clean_value(item) for item in value]
     return value
+
+
+def _parse_date(value: Any) -> date | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _flatten_for_csv(row: Mapping[str, Any]) -> dict[str, Any]:

@@ -156,6 +156,48 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertGreater(rows[0]["score"], 0)
 
+    def test_ranked_jobs_can_filter_by_publish_date(self) -> None:
+        profile = UserProfile(target_titles=["software engineer"])
+        old_job = {
+            "id": "old-1",
+            "site": "indeed",
+            "job_url": "https://example.com/job/old",
+            "title": "Software Engineer",
+            "company": "OldCo",
+            "location": "Portugal",
+            "description": "Python role",
+            "date_posted": "2026-06-01",
+        }
+        new_job = {
+            "id": "new-1",
+            "site": "indeed",
+            "job_url": "https://example.com/job/new",
+            "title": "Software Engineer",
+            "company": "NewCo",
+            "location": "Portugal",
+            "description": "Python role",
+            "date_posted": "2026-06-26",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "job_finger_data"
+            lake = JobLake(data_path)
+            lake.save_search_result(
+                search_name="test-search",
+                search_term="software engineer",
+                location="Portugal",
+                sites=["indeed"],
+                ranked_jobs=[
+                    RankedJob("old-1", old_job, score_job(old_job, profile)),
+                    RankedJob("new-1", new_job, score_job(new_job, profile)),
+                ],
+            )
+
+            rows = list_ranked_jobs(
+                data_path, limit=10, published_from="2026-06-15"
+            )
+
+        self.assertEqual([row["job_id"] for row in rows], ["new-1"])
+
     def test_observation_template_can_be_overridden(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             data_path = Path(temp_dir) / "job_finger_data"

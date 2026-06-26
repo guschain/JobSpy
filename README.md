@@ -224,6 +224,7 @@ Filter local data by exact or related terms:
 ```bash
 python -m job_finger rank --keyword fastapi
 python -m job_finger rank --related-to ai --min-score 55
+python -m job_finger rank --published-from 2026-06-01 --published-to 2026-06-26
 ```
 
 Related groups are configurable under `related_keyword_groups` in
