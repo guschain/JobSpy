@@ -5,7 +5,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from job_finger.config import UserProfile, load_config
+from job_finger.config import UserProfile, ensure_workspace_files, load_config
 from job_finger.drafts import write_cover_letter
 from job_finger.matching import analyze_job_match, normalize_job_fields
 from job_finger.pipeline import RankedJob
@@ -30,7 +30,11 @@ from job_finger.storage import (
     rescore_ranked_jobs,
     update_application,
 )
-from job_finger.ui_server import DEFAULT_OBSERVATION_TEMPLATE, read_observation_template
+from job_finger.ui_server import (
+    DEFAULT_OBSERVATION_TEMPLATE,
+    profile_status,
+    read_observation_template,
+)
 
 
 class ScoringTests(unittest.TestCase):
@@ -285,6 +289,18 @@ class SearchTermTests(unittest.TestCase):
 
 
 class StorageTests(unittest.TestCase):
+    def test_workspace_files_use_data_and_single_output_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = ensure_workspace_files(Path(temp_dir) / "config.json")
+
+            self.assertTrue((workspace / "data").is_dir())
+            self.assertTrue((workspace / "output" / "briefs").is_dir())
+            self.assertTrue((workspace / "output" / "cover_letters").is_dir())
+            self.assertTrue((workspace / "output" / "exports").is_dir())
+            self.assertFalse((workspace / "briefs").exists())
+            self.assertFalse((workspace / "cover_letters").exists())
+            self.assertFalse((workspace / "exports").exists())
+
     def test_save_rank_and_track_in_file_lake(self) -> None:
         profile = UserProfile(
             target_titles=["software engineer"],
@@ -608,6 +624,72 @@ class StorageTests(unittest.TestCase):
             template = read_observation_template(data_path)
 
         self.assertIn("Next action", template)
+
+    def test_profile_status_reports_cv_workspace_and_stored_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_path = root / "data"
+            (root / "cv.pdf").write_bytes(b"%PDF-1.4\n")
+            (root / "cv.md").write_text("Python FastAPI backend engineer", encoding="utf-8")
+            (root / "cv_profile.json").write_text(
+                """
+{
+  "keywords": ["python", "fastapi"],
+  "titles": ["backend engineer"],
+  "languages": ["english"],
+  "evidence": {
+    "python": ["Built Python APIs."],
+    "fastapi": ["Maintained FastAPI services."]
+  },
+  "summary_signals": ["backend engineer", "python"]
+}
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            (root / "config.json").write_text(
+                """
+{
+  "storage_path": "data",
+  "profile": {
+    "name": "Tester",
+    "resume_path": "cv.md",
+    "resume_profile_path": "cv_profile.json"
+  },
+  "searches": [
+    {"name": "test", "search_term": "python", "location": "Portugal"}
+  ]
+}
+""".strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            config = load_config(root / "config.json")
+            job = {
+                "id": "profile-1",
+                "title": "Backend Engineer",
+                "description": "Python and FastAPI role.",
+                "date_posted": "2026-06-26",
+            }
+            JobLake(data_path).save_search_result(
+                search_name="test-search",
+                search_term="backend engineer",
+                location="Portugal",
+                sites=["indeed"],
+                ranked_jobs=[
+                    RankedJob("profile-1", job, score_job(job, config.profile)),
+                ],
+            )
+
+            status = profile_status(config, root / "config.json", data_path)
+
+        self.assertTrue(status["cv_pdf_exists"])
+        self.assertTrue(status["cv_markdown_exists"])
+        self.assertTrue(status["cv_profile_exists"])
+        self.assertGreaterEqual(status["resume_keywords_count"], 2)
+        self.assertGreaterEqual(status["evidence_terms_count"], 2)
+        self.assertEqual(status["stored_jobs_count"], 1)
+        self.assertEqual(status["cv_pdf_path"], str(root / "cv.pdf"))
 
 
 if __name__ == "__main__":

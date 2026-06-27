@@ -217,8 +217,9 @@ Fast local workflow from the repo root:
 .\start-ui.ps1      # opens the local app at http://127.0.0.1:8765/
 ```
 
-Put your CV at `workspace/cv.pdf`, convert it with MarkItDown, then edit the
-generated profile in `workspace/config.json`:
+Put your CV at `workspace/cv.pdf`. The local UI can convert it with
+MarkItDown and re-score stored jobs from the CV panel. The command-line
+equivalent is:
 
 ```bash
 uv run job-finger cv
@@ -266,15 +267,16 @@ workspace/
     scrapes.jsonl         <- append-only scrape history
     applications.jsonl    <- saved/applied/ignored events
     feedback.jsonl        <- learned negative keywords from bad matches
-  briefs/                 <- generated application prep notes
-  cover_letters/          <- generated standalone cover-letter drafts
-  exports/                <- optional CSV output
+  output/
+    briefs/               <- generated application prep notes
+    cover_letters/        <- generated standalone cover-letter drafts
+    exports/              <- optional CSV output
 ```
 
 CSV is created only when explicitly requested:
 
 ```bash
-uv run job-finger rank --csv workspace/exports/jobs.csv
+uv run job-finger rank --csv workspace/output/exports/jobs.csv
 ```
 
 Track an application:
@@ -291,12 +293,14 @@ uv run job-finger ui
 
 The UI reads `workspace/data`, runs keyword searches, filters the local job
 list, shows salary/work-mode/schedule/hours/seniority/type/date when captured,
-and displays application history. Salary found in the job text is also
-annualized for filtering and sorting. Each job detail has a Match tab with CV
-matches, likely gaps, CV evidence snippets, detected skills, application
-suggestions, and a deterministic cover-letter draft. Use `Save Brief` in that
-tab to write a Markdown prep file into `workspace/briefs/` and a standalone
-draft into `workspace/cover_letters/`. Customize UI observations in
+and displays application history. The top CV panel shows whether
+`workspace/cv.pdf` is present and can run MarkItDown plus re-scoring without
+leaving the browser. Salary found in the job text is also annualized for
+filtering and sorting. Each job detail has a Match tab with CV matches, likely
+gaps, CV evidence snippets, detected skills, application suggestions, and a
+deterministic cover-letter draft. Use `Save Brief` in that tab to write a
+Markdown prep file into `workspace/output/briefs/` and a standalone draft into
+`workspace/output/cover_letters/`. Customize UI observations in
 `workspace/observation_template.md`.
 The list view also includes summary counters and quick actions to save, ignore,
 or generate a brief directly from a listing.
@@ -304,7 +308,7 @@ or generate a brief directly from a listing.
 Generate a prep brief for a ranked job:
 
 ```bash
-uv run job-finger brief in-example --out workspace/briefs/in-example.md
+uv run job-finger brief in-example --out workspace/output/briefs/in-example.md
 ```
 
 The `estimated_fit_probability` value is an explainable fit proxy, not a

@@ -18,6 +18,7 @@ from job_finger.config import (
 )
 from job_finger.drafts import write_application_brief, write_cover_letter
 from job_finger.pipeline import run_searches
+from job_finger.resume import convert_resume_to_markdown, write_resume_profile
 from job_finger.search_terms import (
     build_keyword_query,
     expand_related_topics,
@@ -30,6 +31,7 @@ from job_finger.storage import (
     get_job_with_latest_score,
     list_application_events,
     list_ranked_jobs,
+    rescore_ranked_jobs,
     update_application,
     add_feedback,
     learned_negative_terms,
@@ -46,9 +48,10 @@ Next action:
 """
 
 
-@dataclass(frozen=True)
+@dataclass
 class UIServerContext:
     config: JobFingerConfig
+    config_path: Path
     data_path: Path
 
 
@@ -60,9 +63,14 @@ def run_ui_server(
     port: int = 8765,
 ) -> None:
     ensure_workspace_files(config_path)
-    config = _load_config_or_default(config_path)
+    resolved_config_path = Path(config_path)
+    config = _load_config_or_default(resolved_config_path)
     resolved_data_path = config.resolve_storage_path(str(data_path) if data_path else None)
-    context = UIServerContext(config=config, data_path=resolved_data_path)
+    context = UIServerContext(
+        config=config,
+        config_path=resolved_config_path,
+        data_path=resolved_data_path,
+    )
 
     class Handler(JobFingerUIHandler):
         server_context = context
@@ -91,6 +99,9 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/template":
             self._send_json({"template": read_observation_template(self.server_context.data_path)})
             return
+        if parsed.path == "/api/profile":
+            self._handle_profile()
+            return
         if parsed.path == "/api/preferences":
             self._send_json(
                 {
@@ -110,6 +121,12 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return
+        if parsed.path == "/api/cv":
+            self._handle_cv_update()
+            return
+        if parsed.path == "/api/rescore":
+            self._handle_rescore()
+            return
         if parsed.path == "/api/applications":
             self._handle_application_update(self._read_json_body())
             return
@@ -123,6 +140,59 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         return
+
+    def _handle_profile(self) -> None:
+        config = self._refresh_config()
+        self._send_json(
+            profile_status(
+                config,
+                self.server_context.config_path,
+                self.server_context.data_path,
+            )
+        )
+
+    def _handle_cv_update(self) -> None:
+        workspace = self.server_context.config_path.parent
+        source = workspace / "cv.pdf"
+        if not source.exists():
+            self._send_json({"error": f"CV PDF not found at {source}"}, status=404)
+            return
+        markdown_path = convert_resume_to_markdown(source, workspace / "cv.md")
+        write_resume_profile(markdown_path, workspace / "cv_profile.json")
+        config = self._refresh_config()
+        count = rescore_ranked_jobs(self.server_context.data_path, config.profile)
+        self._send_json(
+            {
+                "ok": True,
+                "rescore_count": count,
+                "profile": profile_status(
+                    config,
+                    self.server_context.config_path,
+                    self.server_context.data_path,
+                ),
+            }
+        )
+
+    def _handle_rescore(self) -> None:
+        config = self._refresh_config()
+        count = rescore_ranked_jobs(self.server_context.data_path, config.profile)
+        self._send_json(
+            {
+                "ok": True,
+                "rescore_count": count,
+                "profile": profile_status(
+                    config,
+                    self.server_context.config_path,
+                    self.server_context.data_path,
+                ),
+            }
+        )
+
+    def _refresh_config(self) -> JobFingerConfig:
+        self.server_context.config = _load_config_or_default(
+            self.server_context.config_path
+        )
+        return self.server_context.config
 
     def _handle_jobs(self, query: dict[str, list[str]]) -> None:
         limit = _int_query(query, "limit", 100)
@@ -260,11 +330,13 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
             return
         out_path = (
             self.server_context.data_path.parent
+            / "output"
             / "briefs"
             / f"{_safe_filename(job_id)}.md"
         )
         cover_path = (
             self.server_context.data_path.parent
+            / "output"
             / "cover_letters"
             / f"{_safe_filename(job_id)}.md"
         )
@@ -405,6 +477,31 @@ def _load_config_or_default(config_path: str | Path) -> JobFingerConfig:
     if path.exists():
         return load_config(path)
     return JobFingerConfig.from_dict(example_config(), source_path=path)
+
+
+def profile_status(
+    config: JobFingerConfig, config_path: str | Path, data_path: str | Path
+) -> dict[str, Any]:
+    config_path = Path(config_path)
+    workspace = config_path.parent
+    resume_profile = config.profile.resume_profile or {}
+    evidence = dict(resume_profile.get("evidence") or {})
+    return {
+        "name": config.profile.name,
+        "workspace": str(workspace),
+        "cv_pdf_path": str(workspace / "cv.pdf"),
+        "cv_pdf_exists": (workspace / "cv.pdf").exists(),
+        "cv_markdown_path": str(workspace / "cv.md"),
+        "cv_markdown_exists": (workspace / "cv.md").exists(),
+        "cv_profile_path": str(workspace / "cv_profile.json"),
+        "cv_profile_exists": (workspace / "cv_profile.json").exists(),
+        "resume_keywords_count": len(config.profile.resume_keywords),
+        "target_titles": config.profile.target_titles,
+        "languages": config.profile.languages,
+        "evidence_terms_count": len(evidence),
+        "summary_signals": resume_profile.get("summary_signals") or [],
+        "stored_jobs_count": len(JobLake(data_path).read_ranked_snapshot()),
+    }
 
 
 def _list_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -680,16 +777,58 @@ INDEX_HTML = r"""<!doctype html>
       color: #fff;
     }
     button.primary:hover { background: var(--accent-dark); }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: .55;
+    }
     .toolbar {
       display: grid;
       grid-template-columns: minmax(180px, 1.2fr) minmax(150px, .8fr) 120px 90px 120px auto auto;
       gap: 10px;
       align-items: end;
     }
+    .cv-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+      padding: 10px 12px;
+      min-width: 0;
+    }
+    .cv-title {
+      font-weight: 700;
+      font-size: 13px;
+      line-height: 1.25;
+    }
+    .cv-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: end;
+    }
+    .pill.good {
+      border-color: #7dd3c7;
+      color: var(--good);
+      background: #ecfdf9;
+    }
+    .pill.warn {
+      border-color: #f3c677;
+      color: var(--warn);
+      background: #fff7ed;
+    }
+    .pill.bad {
+      border-color: #fdba74;
+      color: var(--bad);
+      background: #fff7ed;
+    }
     main {
       display: grid;
       grid-template-columns: minmax(380px, 42%) minmax(420px, 1fr);
-      min-height: calc(100vh - 114px);
+      min-height: calc(100vh - 172px);
     }
     aside {
       border-right: 1px solid var(--line);
@@ -740,7 +879,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .job-list {
       overflow: auto;
-      max-height: calc(100vh - 190px);
+      max-height: calc(100vh - 248px);
       display: grid;
       gap: 10px;
       padding: 10px;
@@ -860,7 +999,7 @@ INDEX_HTML = r"""<!doctype html>
     section.detail {
       min-width: 0;
       overflow: auto;
-      max-height: calc(100vh - 114px);
+      max-height: calc(100vh - 172px);
     }
     .detail-head {
       padding: 18px;
@@ -945,9 +1084,10 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
     }
     @media (max-width: 900px) {
-      .toolbar, main, .filters, .exclude-filters, .summary-strip, .form-grid {
+      .toolbar, .cv-panel, main, .filters, .exclude-filters, .summary-strip, .form-grid {
         grid-template-columns: 1fr;
       }
+      .cv-actions { justify-content: start; }
       section.detail, .job-list {
         max-height: none;
       }
@@ -973,6 +1113,7 @@ INDEX_HTML = r"""<!doctype html>
       <button class="primary" id="runSearch">Search Boards</button>
       <button id="refresh">Refresh</button>
     </div>
+    <div id="cvPanel" class="cv-panel"></div>
   </header>
   <main>
     <aside>
@@ -1068,7 +1209,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
   <script>
-    const state = { jobs: [], selectedId: null, detail: null, activeTab: "post", summary: null };
+    const state = { jobs: [], selectedId: null, detail: null, activeTab: "post", summary: null, profile: null };
     const $ = (id) => document.getElementById(id);
 
     function splitTerms(value) {
@@ -1083,6 +1224,95 @@ INDEX_HTML = r"""<!doctype html>
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || response.statusText);
       return data;
+    }
+
+    async function loadProfile() {
+      try {
+        state.profile = await api("/api/profile");
+        renderProfile();
+      } catch (error) {
+        $("cvPanel").innerHTML = `
+          <div>
+            <div class="cv-title">Profile unavailable</div>
+            <div class="small">${escapeHtml(error.message)}</div>
+          </div>`;
+      }
+    }
+
+    function renderProfile() {
+      const profile = state.profile || {};
+      const cvState = profile.cv_profile_exists
+        ? "CV profile ready"
+        : (profile.cv_pdf_exists ? "CV PDF found" : "CV PDF missing");
+      const cvClass = profile.cv_profile_exists
+        ? "good"
+        : (profile.cv_pdf_exists ? "warn" : "bad");
+      const cvPath = profile.cv_pdf_path || "workspace/cv.pdf";
+      const pathStatus = profile.cv_pdf_exists ? cvPath : `Missing ${cvPath}`;
+      $("cvPanel").innerHTML = `
+        <div>
+          <div class="cv-title">${escapeHtml(profile.name || "Local profile")}</div>
+          <div class="status-line">
+            <span class="pill ${cvClass}">${escapeHtml(cvState)}</span>
+            <span class="pill">${escapeHtml(profile.resume_keywords_count || 0)} CV keywords</span>
+            <span class="pill">${escapeHtml(profile.evidence_terms_count || 0)} evidence terms</span>
+            <span class="pill">${escapeHtml(profile.stored_jobs_count || 0)} stored jobs</span>
+          </div>
+          <div class="small">${escapeHtml(pathStatus)}</div>
+        </div>
+        <div class="cv-actions">
+          <button class="primary" id="updateCv" ${profile.cv_pdf_exists ? "" : "disabled"}>Convert CV + Rescore</button>
+          <button id="rescoreJobs">Rescore Jobs</button>
+          <span class="small" id="cvStatus"></span>
+        </div>`;
+      $("updateCv").onclick = updateCv;
+      $("rescoreJobs").onclick = rescoreJobs;
+    }
+
+    function setCvBusy(isBusy) {
+      const update = $("updateCv");
+      const rescore = $("rescoreJobs");
+      if (update) update.disabled = isBusy || !(state.profile && state.profile.cv_pdf_exists);
+      if (rescore) rescore.disabled = isBusy;
+    }
+
+    async function updateCv() {
+      const status = $("cvStatus");
+      setCvBusy(true);
+      status.textContent = "Converting";
+      try {
+        const payload = await api("/api/cv", { method: "POST", body: "{}" });
+        state.profile = payload.profile;
+        renderProfile();
+        $("cvStatus").textContent = `Re-scored ${payload.rescore_count} job(s)`;
+        await loadJobs();
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        setCvBusy(false);
+      }
+    }
+
+    async function rescoreJobs() {
+      const status = $("cvStatus");
+      setCvBusy(true);
+      status.textContent = "Re-scoring";
+      try {
+        const payload = await api("/api/rescore", { method: "POST", body: "{}" });
+        state.profile = payload.profile;
+        renderProfile();
+        $("cvStatus").textContent = `Re-scored ${payload.rescore_count} job(s)`;
+        await loadJobs();
+      } catch (error) {
+        status.textContent = error.message;
+      } finally {
+        setCvBusy(false);
+      }
+    }
+
+    async function refreshAll() {
+      await loadProfile();
+      await loadJobs();
     }
 
     async function loadJobs() {
@@ -1460,7 +1690,7 @@ INDEX_HTML = r"""<!doctype html>
       $("runSearch").textContent = "Searching";
       try {
         await api("/api/search", { method: "POST", body: JSON.stringify(payload) });
-        await loadJobs();
+        await refreshAll();
       } finally {
         $("runSearch").disabled = false;
         $("runSearch").textContent = "Search Boards";
@@ -1499,7 +1729,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     $("runSearch").onclick = runSearch;
-    $("refresh").onclick = loadJobs;
+    $("refresh").onclick = refreshAll;
     function salaryLabel(job) {
       if (job.salary_label) return job.salary_label;
       const min = job.min_amount;
@@ -1534,7 +1764,7 @@ INDEX_HTML = r"""<!doctype html>
       $(id).addEventListener("change", loadJobs);
       $(id).addEventListener("keyup", event => { if (event.key === "Enter") loadJobs(); });
     });
-    loadJobs();
+    refreshAll();
   </script>
 </body>
 </html>"""

@@ -398,7 +398,7 @@ def write_example_config(
 def ensure_workspace_files(config_path: str | Path = DEFAULT_CONFIG_PATH) -> Path:
     config_path = Path(config_path)
     workspace = config_path.parent
-    for folder in ("data", "briefs", "cover_letters", "exports"):
+    for folder in ("data", "output/briefs", "output/cover_letters", "output/exports"):
         (workspace / folder).mkdir(parents=True, exist_ok=True)
     _write_if_missing(
         workspace / "observation_template.md",

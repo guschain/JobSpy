@@ -351,9 +351,10 @@ def cmd_brief(args) -> int:
     if row is None:
         raise SystemExit(f"No job found with id {args.job_id}")
     workspace = lake_path.parent
-    out_path = args.out or workspace / "briefs" / f"{args.job_id}.md"
+    out_path = args.out or workspace / "output" / "briefs" / f"{args.job_id}.md"
     cover_out_path = (
-        args.cover_out or workspace / "cover_letters" / f"{args.job_id}.md"
+        args.cover_out
+        or workspace / "output" / "cover_letters" / f"{args.job_id}.md"
     )
     path = write_application_brief(dict(row), config.profile, out_path)
     cover_path = write_cover_letter(dict(row), config.profile, cover_out_path)
