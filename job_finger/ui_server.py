@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -50,6 +51,16 @@ Concerns:
 Next action:
 """
 
+ASSET_ROOT = Path(__file__).with_name("assets")
+ASSET_CONTENT_TYPES = {
+    ".avif": "image/avif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".webp": "image/webp",
+}
+
 
 @dataclass
 class UIServerContext:
@@ -93,6 +104,9 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._send_html(INDEX_HTML)
+            return
+        if parsed.path.startswith("/assets/"):
+            self._send_asset(parsed.path)
             return
         if parsed.path == "/api/jobs":
             self._handle_jobs(parse_qs(parsed.query))
@@ -466,6 +480,34 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _send_asset(self, request_path: str) -> None:
+        relative = Path(unquote(request_path.removeprefix("/assets/")))
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        root = ASSET_ROOT.resolve()
+        target = (root / relative).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if not target.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        payload = target.read_bytes()
+        content_type = (
+            ASSET_CONTENT_TYPES.get(target.suffix.lower())
+            or mimetypes.guess_type(str(target))[0]
+            or "application/octet-stream"
+        )
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _send_json(self, payload: Any, status: int = 200) -> None:
         encoded = json.dumps(payload, default=str).encode("utf-8")
@@ -1125,6 +1167,16 @@ INDEX_HTML = r"""<!doctype html>
       min-width: 0;
       max-width: 1120px;
     }
+    header > .brand-row,
+    header > .toolbar,
+    header > .category-bar,
+    header > .search-progress,
+    header > .cv-panel {
+      width: 100%;
+      max-width: calc(1560px - 56px);
+      margin-left: auto;
+      margin-right: auto;
+    }
     .cv-title {
       font-weight: 700;
       font-size: 13px;
@@ -1264,19 +1316,38 @@ INDEX_HTML = r"""<!doctype html>
       box-shadow: 0 9px 24px rgba(34, 34, 34, .10);
     }
     .card-visual {
-      min-height: 166px;
+      position: relative;
+      height: 174px;
       padding: 12px;
       display: grid;
       align-content: space-between;
+      overflow: hidden;
+      background: #f1eee9;
+    }
+    .card-visual::after {
+      content: "";
+      position: absolute;
+      inset: 0;
       background:
-        linear-gradient(135deg, rgba(184,79,67,.16), rgba(37,111,133,.14)),
-        #f1eee9;
+        linear-gradient(180deg, rgba(0,0,0,.06), rgba(0,0,0,.28)),
+        linear-gradient(135deg, rgba(184,79,67,.08), rgba(37,111,133,.08));
+      z-index: 0;
+    }
+    .card-image {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scale(1.01);
     }
     .company-initials {
+      position: relative;
+      z-index: 1;
       width: 46px;
       height: 46px;
       border-radius: 12px;
-      background: #fff;
+      background: rgba(255,255,255,.94);
       display: grid;
       place-items: center;
       color: var(--ink);
@@ -1284,6 +1355,8 @@ INDEX_HTML = r"""<!doctype html>
       box-shadow: 0 1px 8px rgba(34, 34, 34, .08);
     }
     .score-badge {
+      position: relative;
+      z-index: 1;
       justify-self: start;
       border-radius: 999px;
       padding: 5px 8px;
@@ -1591,9 +1664,15 @@ INDEX_HTML = r"""<!doctype html>
         inset: auto;
       }
       .cv-actions { justify-content: start; }
+      .results-head {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
       .summary-strip {
         display: flex;
         overflow-x: auto;
+        padding-left: 18px;
+        padding-right: 18px;
       }
       .summary-item {
         min-width: 116px;
@@ -1771,6 +1850,40 @@ INDEX_HTML = r"""<!doctype html>
       searchTimer: null,
     };
     const $ = (id) => document.getElementById(id);
+    const JOB_VISUALS = {
+      software: "/assets/job-visuals/software.webp",
+      data: "/assets/job-visuals/data-ai.webp",
+      product: "/assets/job-visuals/product-design.webp",
+      growth: "/assets/job-visuals/sales-marketing.webp",
+      operations: "/assets/job-visuals/operations-finance.webp",
+      support: "/assets/job-visuals/support-success.webp",
+    };
+    const VISUAL_CATEGORIES = [
+      {
+        key: "data",
+        terms: ["data", "dados", "analytics", "analyst", "analista", "bi", "machine learning", "ml", "ai", "ia", "artificial intelligence", "scientist", "etl", "pipeline"],
+      },
+      {
+        key: "product",
+        terms: ["product", "produto", "designer", "design", "ux", "ui", "research", "figma", "user experience", "service design"],
+      },
+      {
+        key: "growth",
+        terms: ["sales", "vendas", "comercial", "business development", "marketing", "growth", "account executive", "customer acquisition", "seo", "performance"],
+      },
+      {
+        key: "support",
+        terms: ["support", "suporte", "customer success", "cliente", "helpdesk", "implementation", "onboarding", "service desk", "technical support"],
+      },
+      {
+        key: "operations",
+        terms: ["operations", "operacoes", "operações", "finance", "financas", "finanças", "project", "projeto", "program", "hr", "people", "recruiter", "talent", "business analyst"],
+      },
+      {
+        key: "software",
+        terms: ["software", "engineer", "engenheiro", "developer", "programador", "backend", "frontend", "fullstack", "full stack", "devops", "sre", "platform", "cloud", "python", "react", "java", "node"],
+      },
+    ];
 
     function splitTerms(value) {
       return value.split(",").map(item => item.trim()).filter(Boolean);
@@ -1944,6 +2057,22 @@ INDEX_HTML = r"""<!doctype html>
         </div>`).join("");
     }
 
+    function jobVisual(job) {
+      const words = [
+        job.title,
+        job.company,
+        job.location,
+        job.seniority,
+        ...(job.skills || []),
+        ...(job.cv_matched_keywords || []),
+        ...(job.cv_missing_keywords || []),
+      ].filter(Boolean).join(" ").toLowerCase();
+      const category = VISUAL_CATEGORIES.find(item =>
+        item.terms.some(term => words.includes(term))
+      );
+      return JOB_VISUALS[category?.key || "operations"];
+    }
+
     function renderList() {
       const list = $("jobList");
       list.innerHTML = "";
@@ -1966,8 +2095,10 @@ INDEX_HTML = r"""<!doctype html>
           showSchedule(job) ? formatSchedule(job.work_schedule) : "",
           job.published_at ? `Published ${job.published_at}` : "",
         ].filter(Boolean).join(" · ");
+        const visual = jobVisual(job);
         row.innerHTML = `
           <div class="card-visual">
+            <img class="card-image" src="${escapeAttr(visual)}" alt="">
             <div class="company-initials">${escapeHtml(initials(job.company || job.title || "RF"))}</div>
             <div class="score-badge">${Math.round(job.score || 0)} match</div>
           </div>
