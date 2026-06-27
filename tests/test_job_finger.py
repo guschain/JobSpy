@@ -31,6 +31,7 @@ from job_finger.search_terms import (
 from job_finger.storage import (
     JobLake,
     add_feedback,
+    canonical_role_family,
     learned_negative_terms,
     list_application_events,
     list_ranked_jobs,
@@ -457,6 +458,70 @@ class StorageTests(unittest.TestCase):
 
         self.assertEqual([row["job_id"] for row in rows], ["new-1"])
         self.assertEqual([row["job_id"] for row in newest_first], ["new-1", "old-1"])
+
+    def test_canonical_role_family_groups_seniority_variants(self) -> None:
+        self.assertEqual(
+            canonical_role_family({"title": "Senior Data Analyst"}),
+            "Data Analyst",
+        )
+        self.assertEqual(
+            canonical_role_family({"title": "Data Analyst"}),
+            "Data Analyst",
+        )
+        self.assertEqual(
+            canonical_role_family({"title": "Data & AI Analyst"}),
+            "Data Analyst",
+        )
+        self.assertEqual(
+            canonical_role_family({"title": "Sr. Backend Engineer"}),
+            "Backend Engineer",
+        )
+
+    def test_ranked_jobs_can_sort_by_role_family(self) -> None:
+        profile = UserProfile(target_titles=["data analyst", "backend engineer"])
+        jobs = [
+            {
+                "id": "software-1",
+                "title": "Backend Engineer",
+                "description": "Python APIs.",
+                "date_posted": "2026-06-25",
+            },
+            {
+                "id": "data-senior-1",
+                "title": "Senior Data Analyst",
+                "description": "SQL dashboards.",
+                "date_posted": "2026-06-26",
+            },
+            {
+                "id": "data-1",
+                "title": "Data Analyst",
+                "description": "BI reporting.",
+                "date_posted": "2026-06-24",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "job_finger_data"
+            JobLake(data_path).save_search_result(
+                search_name="test-search",
+                search_term="analyst engineer",
+                location="Portugal",
+                sites=["indeed"],
+                ranked_jobs=[
+                    RankedJob(str(job["id"]), job, score_job(job, profile))
+                    for job in jobs
+                ],
+            )
+
+            rows = list_ranked_jobs(data_path, limit=10, sort_by="role")
+
+        self.assertEqual(
+            [row["role_family"] for row in rows],
+            ["Backend Engineer", "Data Analyst", "Data Analyst"],
+        )
+        self.assertEqual(
+            [row["job_id"] for row in rows[1:]],
+            ["data-senior-1", "data-1"],
+        )
 
     def test_ranked_jobs_can_filter_by_normalized_fields(self) -> None:
         profile = UserProfile(

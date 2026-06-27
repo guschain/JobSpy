@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import math
+import re
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -12,6 +13,54 @@ from typing import Any, Iterable, Mapping
 from job_finger.matching import normalize_job_fields
 from job_finger.resume import normalize_text
 from job_finger.search_terms import unique_terms
+
+
+ROLE_FAMILY_PATTERNS: list[tuple[str, list[str]]] = [
+    ("Data Engineer", ["data engineer", "analytics engineer", "etl engineer", "bi engineer"]),
+    ("Data Analyst", ["data analyst", "data ai analyst", "data and ai analyst", "business intelligence analyst", "bi analyst", "analytics analyst", "reporting analyst"]),
+    ("Machine Learning Engineer", ["machine learning engineer", "ml engineer", "ai engineer", "artificial intelligence engineer", "data scientist"]),
+    ("Backend Engineer", ["backend engineer", "back end engineer", "backend developer", "api engineer", "python developer", "java developer"]),
+    ("Frontend Engineer", ["frontend engineer", "front end engineer", "frontend developer", "react developer", "ui developer"]),
+    ("Full Stack Engineer", ["full stack engineer", "fullstack engineer", "full stack developer", "fullstack developer"]),
+    ("DevOps Engineer", ["devops engineer", "sre", "site reliability engineer", "platform engineer", "cloud engineer"]),
+    ("Software Engineer", ["software engineer", "software developer", "developer", "programmer", "programador"]),
+    ("Product Manager", ["product manager", "product owner", "gestor de produto"]),
+    ("UX/UI Designer", ["ux designer", "ui designer", "product designer", "service designer"]),
+    ("Project Manager", ["project manager", "program manager", "delivery manager", "scrum master"]),
+    ("Business Analyst", ["business analyst", "functional analyst", "analista funcional"]),
+    ("Sales", ["sales", "account executive", "business development", "comercial", "vendas"]),
+    ("Marketing", ["marketing", "growth", "seo", "performance marketer"]),
+    ("Customer Success", ["customer success", "customer support", "technical support", "support engineer", "helpdesk"]),
+    ("Finance", ["finance", "financial analyst", "accountant", "contabilista"]),
+    ("People / HR", ["human resources", "hr", "people", "recruiter", "talent acquisition"]),
+    ("Operations", ["operations", "operacoes", "procurement", "supply chain"]),
+]
+ROLE_TITLE_NOISE = {
+    "senior",
+    "sr",
+    "junior",
+    "jr",
+    "lead",
+    "principal",
+    "staff",
+    "mid",
+    "mid-level",
+    "trainee",
+    "intern",
+    "internship",
+    "remote",
+    "hybrid",
+    "hibrido",
+    "hibrida",
+    "lisbon",
+    "lisboa",
+    "porto",
+    "portugal",
+    "m/f",
+    "f/m",
+    "m/f/d",
+    "f/m/div",
+}
 
 
 def utc_now() -> str:
@@ -382,6 +431,7 @@ def _snapshot_record(
         "job_url": clean_job.get("job_url"),
         "job_url_direct": clean_job.get("job_url_direct"),
         "title": clean_job.get("title"),
+        "role_family": canonical_role_family(clean_job),
         "company": clean_job.get("company"),
         "location": clean_job.get("location"),
         "date_posted": clean_job.get("date_posted"),
@@ -497,6 +547,12 @@ def _sort_key(sort_by: str):
             -(_parse_date(row.get("date_posted")) or date.min).toordinal(),
             -float(row.get("score") or 0),
         )
+    if sort_by in {"role", "role_type", "job_type"}:
+        return lambda row: (
+            canonical_role_family(row).lower(),
+            -float(row.get("score") or 0),
+            -(_parse_date(row.get("date_posted")) or date.min).toordinal(),
+        )
     if sort_by == "salary":
         return lambda row: (
             -(_best_salary(row) or 0),
@@ -508,6 +564,51 @@ def _sort_key(sort_by: str):
             -float(row.get("score") or 0),
         )
     return lambda row: (-float(row.get("score") or 0), str(row.get("company") or ""))
+
+
+def canonical_role_family(row: Mapping[str, Any]) -> str:
+    cached = str(row.get("role_family") or "").strip()
+    if cached:
+        return cached
+    title = _clean_title_for_role(row.get("title"))
+    search_text = normalize_text(
+        " ".join(
+            str(value or "")
+            for value in (
+                row.get("title"),
+                row.get("job_type"),
+                row.get("employment_type"),
+                " ".join(str(item) for item in row.get("skills") or []),
+            )
+        )
+    )
+    for label, patterns in ROLE_FAMILY_PATTERNS:
+        if any(_phrase_in_text(pattern, search_text) for pattern in patterns):
+            return label
+    return title or "Other"
+
+
+def _clean_title_for_role(value: Any) -> str:
+    text = normalize_text(value)
+    if not text:
+        return ""
+    text = re.sub(r"\([^)]*\)", " ", text)
+    text = re.sub(r"\b(m/f/d|f/m/div|m/f|f/m|remoto|remote|hybrid|hibrido|hibrida)\b", " ", text)
+    words = [
+        word
+        for word in re.split(r"[\s,|/:-]+", text)
+        if word and word not in ROLE_TITLE_NOISE and not word.isdigit()
+    ]
+    if not words:
+        return ""
+    return " ".join(word.capitalize() for word in words[:4])
+
+
+def _phrase_in_text(phrase: str, text: str) -> bool:
+    normalized = normalize_text(phrase)
+    if not normalized:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", text) is not None
 
 
 def _best_salary(row: Mapping[str, Any]) -> float | None:

@@ -32,6 +32,7 @@ from job_finger.search_terms import (
 )
 from job_finger.storage import (
     JobLake,
+    canonical_role_family,
     get_job_with_latest_score,
     list_application_events,
     list_ranked_jobs,
@@ -750,6 +751,7 @@ def _list_row(row: dict[str, Any]) -> dict[str, Any]:
         "recommendation": row.get("recommendation"),
         "status": row.get("application_status"),
         "title": row.get("title"),
+        "role_family": canonical_role_family(row),
         "company": row.get("company"),
         "location": row.get("location"),
         "site": row.get("site"),
@@ -782,10 +784,12 @@ def _ranked_row(item: Any) -> dict[str, Any]:
         "recommendation": item.score.recommendation,
         "status": "new",
         "title": item.job.get("title"),
+        "role_family": canonical_role_family({**item.job, **normalized}),
         "company": item.job.get("company"),
         "location": item.job.get("location"),
         "site": item.job.get("site"),
         "date_posted": item.job.get("date_posted"),
+        "published_at": item.job.get("date_posted"),
         "salary_label": normalized.get("salary_label") or salary_label(item.job),
         "salary_annual_min": normalized.get("salary_annual_min"),
         "salary_annual_max": normalized.get("salary_annual_max"),
@@ -1341,22 +1345,79 @@ INDEX_HTML = r"""<!doctype html>
       object-fit: cover;
       transform: scale(1.01);
     }
-    .company-initials {
+    .visual-top, .visual-bottom {
       position: relative;
       z-index: 1;
-      width: 46px;
-      height: 46px;
-      border-radius: 12px;
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .visual-bottom {
+      align-items: end;
+    }
+    .company-chip {
+      position: relative;
+      max-width: 142px;
+      min-height: 34px;
+      border-radius: 10px;
       background: rgba(255,255,255,.94);
-      display: grid;
-      place-items: center;
+      display: flex;
+      align-items: center;
       color: var(--ink);
       font-weight: 800;
+      font-size: 12px;
+      line-height: 1.15;
+      padding: 7px 9px;
       box-shadow: 0 1px 8px rgba(34, 34, 34, .08);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .date-badge {
+      border: 1px solid rgba(255,255,255,.58);
+      border-radius: 12px;
+      min-width: 66px;
+      padding: 7px 8px 6px;
+      color: #fff;
+      text-align: center;
+      box-shadow: 0 8px 20px rgba(34, 34, 34, .18);
+    }
+    .date-age {
+      display: block;
+      font-size: 18px;
+      font-weight: 900;
+      line-height: 1;
+    }
+    .date-label {
+      display: block;
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.1;
+      margin-top: 3px;
+      text-transform: uppercase;
+    }
+    .recency-hot { background: #b91c1c; }
+    .recency-fresh { background: #d85f2a; }
+    .recency-warm { background: #c08403; }
+    .recency-cool { background: #256f85; }
+    .recency-old { background: #57534e; }
+    .recency-unknown { background: #6b7280; }
+    .role-type-badge {
+      border-radius: 999px;
+      padding: 5px 8px;
+      color: var(--ink);
+      background: rgba(255,255,255,.92);
+      font-size: 11px;
+      font-weight: 800;
+      max-width: 142px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .score-badge {
       position: relative;
-      z-index: 1;
       justify-self: start;
       border-radius: 999px;
       padding: 5px 8px;
@@ -1842,7 +1903,8 @@ INDEX_HTML = r"""<!doctype html>
           <label>Sort
             <select id="sortBy">
               <option value="score">Best match</option>
-              <option value="newest">Newest</option>
+              <option value="newest">Recency</option>
+              <option value="role">Role type</option>
               <option value="salary">Salary</option>
               <option value="company">Company</option>
             </select>
@@ -2158,6 +2220,7 @@ INDEX_HTML = r"""<!doctype html>
     function jobVisual(job) {
       const words = [
         job.title,
+        job.role_family,
         job.company,
         job.location,
         job.seniority,
@@ -2195,14 +2258,25 @@ INDEX_HTML = r"""<!doctype html>
           job.salary_label,
           formatWorkMode(job.work_mode),
           showSchedule(job) ? formatSchedule(job.work_schedule) : "",
-          job.published_at ? `Published ${job.published_at}` : "",
         ].filter(Boolean).join(" · ");
         const visual = jobVisual(job);
+        const recency = recencyInfo(job.published_at || job.date_posted);
+        const companyName = companyLabel(job.company || "Company");
+        const roleFamily = job.role_family || "Other";
         row.innerHTML = `
           <div class="card-visual">
             <img class="card-image" src="${escapeAttr(visual)}" alt="">
-            <div class="company-initials">${escapeHtml(initials(job.company || job.title || "RF"))}</div>
-            <div class="score-badge">${Math.round(job.score || 0)} match</div>
+            <div class="visual-top">
+              <div class="company-chip" title="${escapeAttr(job.company || "Company not shown")}">${escapeHtml(companyName)}</div>
+              <div class="date-badge ${escapeAttr(recency.className)}" title="${escapeAttr(recency.title)}">
+                <span class="date-age">${escapeHtml(recency.dateText)}</span>
+                <span class="date-label">${escapeHtml(recency.ageText)}</span>
+              </div>
+            </div>
+            <div class="visual-bottom">
+              <div class="score-badge">${Math.round(job.score || 0)} match</div>
+              <div class="role-type-badge" title="${escapeAttr(roleFamily)}">${escapeHtml(roleFamily)}</div>
+            </div>
           </div>
           <div class="card-body">
             <div class="card-top">
@@ -2265,6 +2339,7 @@ INDEX_HTML = r"""<!doctype html>
               <div class="meta">${escapeHtml([job.company, job.location].filter(Boolean).join(" · ") || "Company not shown")}</div>
               <div class="status-line">
                 <span class="pill">${escapeHtml(job.application_status || "new")}</span>
+                ${job.role_family ? `<span class="pill">${escapeHtml(job.role_family)}</span>` : ""}
                 ${job.date_posted ? `<span class="pill">Published ${escapeHtml(job.date_posted)}</span>` : ""}
                 ${salaryLabel(job) ? `<span class="pill">${escapeHtml(salaryLabel(job))}</span>` : ""}
                 ${job.work_mode ? `<span class="pill">${escapeHtml(formatWorkMode(job.work_mode))}</span>` : ""}
@@ -2654,6 +2729,62 @@ INDEX_HTML = r"""<!doctype html>
     }
     function escapeAttr(value) { return escapeHtml(value); }
     function formatDate(value) { return String(value || "").replace("T", " ").replace("+00:00", ""); }
+
+    function companyLabel(value) {
+      const clean = String(value || "Company").trim() || "Company";
+      return clean.length > 12 ? `${clean.slice(0, 12)}...` : clean;
+    }
+
+    function recencyInfo(value) {
+      const datePart = publishedDatePart(value);
+      const date = parsePublishedDate(datePart);
+      if (!date) {
+        return {
+          className: "recency-unknown",
+          dateText: "No date",
+          ageText: "posted",
+          title: "Publish date not captured",
+        };
+      }
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const published = new Date(date);
+      published.setHours(0, 0, 0, 0);
+      const days = Math.max(0, Math.floor((today - published) / 86400000));
+      const className = days <= 1
+        ? "recency-hot"
+        : days <= 3
+          ? "recency-fresh"
+          : days <= 7
+            ? "recency-warm"
+            : days <= 14
+              ? "recency-cool"
+              : "recency-old";
+      const dateText = published.toLocaleDateString("en-GB", {
+        day: "2-digit",
+        month: "short",
+      });
+      const ageText = days === 0 ? "today" : `${days}d old`;
+      return {
+        className,
+        dateText,
+        ageText,
+        title: `Published ${datePart} (${ageText})`,
+      };
+    }
+
+    function publishedDatePart(value) {
+      const raw = String(value || "").trim();
+      return raw.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || raw;
+    }
+
+    function parsePublishedDate(value) {
+      if (!value) return null;
+      const datePart = String(value || "").trim();
+      if (!datePart) return null;
+      const date = new Date(`${datePart}T00:00:00`);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
 
     function listItems(items, emptyText) {
       const values = (items || []).filter(item => String(item || "").trim());
