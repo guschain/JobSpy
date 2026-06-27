@@ -251,6 +251,7 @@ def list_ranked_jobs(
     published_from: str | date | None = None,
     published_to: str | date | None = None,
     work_mode: str | None = None,
+    work_schedule: str | None = None,
     seniority: str | None = None,
     min_salary: float | None = None,
     recommendation: str | None = None,
@@ -291,6 +292,8 @@ def list_ranked_jobs(
         ):
             continue
         if work_mode and str(row.get("work_mode") or "") != work_mode:
+            continue
+        if work_schedule and str(row.get("work_schedule") or "") != work_schedule:
             continue
         if seniority and str(row.get("seniority") or "") != seniority:
             continue
@@ -390,9 +393,15 @@ def _snapshot_record(
         "salary_source": normalized.get("salary_source"),
         "salary_min": normalized.get("salary_min"),
         "salary_max": normalized.get("salary_max"),
+        "salary_annual_min": normalized.get("salary_annual_min"),
+        "salary_annual_max": normalized.get("salary_annual_max"),
         "salary_label": normalized.get("salary_label"),
         "is_remote": clean_job.get("is_remote"),
         "work_mode": normalized.get("work_mode"),
+        "work_schedule": normalized.get("work_schedule"),
+        "hours_per_week_min": normalized.get("hours_per_week_min"),
+        "hours_per_week_max": normalized.get("hours_per_week_max"),
+        "work_hours_label": normalized.get("work_hours_label"),
         "seniority": normalized.get("seniority"),
         "employment_type": normalized.get("employment_type"),
         "description": clean_job.get("description"),
@@ -450,6 +459,7 @@ def _job_from_snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
         "max_amount": row.get("max_amount"),
         "currency": row.get("currency"),
         "is_remote": row.get("is_remote"),
+        "work_from_home_type": row.get("work_mode"),
         "company_industry": row.get("company_industry"),
     }
 
@@ -502,6 +512,8 @@ def _sort_key(sort_by: str):
 
 def _best_salary(row: Mapping[str, Any]) -> float | None:
     values = [
+        _safe_float(row.get("salary_annual_max")),
+        _safe_float(row.get("salary_annual_min")),
         _safe_float(row.get("salary_max")),
         _safe_float(row.get("salary_min")),
         _safe_float(row.get("max_amount")),

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from job_finger.config import UserProfile, load_config
 from job_finger.drafts import write_cover_letter
-from job_finger.matching import analyze_job_match
+from job_finger.matching import analyze_job_match, normalize_job_fields
 from job_finger.pipeline import RankedJob
 from job_finger.resume import (
     analyze_resume_text,
@@ -144,6 +144,43 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(analysis["cv_evidence"][0]["keyword"], "python")
         self.assertIn("Built Python APIs", analysis["cover_letter_draft"])
         self.assertTrue(analysis["cover_letter_draft"])
+
+    def test_normalization_parses_salary_and_hours_from_description(self) -> None:
+        job = {
+            "title": "Data Engineer",
+            "description": (
+                "Contrato full-time em regime hibrido. Salario 35.000€ - "
+                "45.000€ bruto anual. Horario de 40 horas por semana."
+            ),
+        }
+
+        normalized = normalize_job_fields(job)
+
+        self.assertEqual(normalized["work_mode"], "hybrid")
+        self.assertEqual(normalized["work_schedule"], "full_time")
+        self.assertEqual(normalized["salary_min"], 35000)
+        self.assertEqual(normalized["salary_max"], 45000)
+        self.assertEqual(normalized["salary_annual_max"], 45000)
+        self.assertEqual(normalized["salary_interval"], "yearly")
+        self.assertEqual(normalized["salary_source"], "description")
+        self.assertEqual(normalized["work_hours_label"], "40 h/week")
+
+    def test_normalization_annualizes_monthly_salary(self) -> None:
+        normalized = normalize_job_fields(
+            {
+                "description": (
+                    "Oferta part-time remota com vencimento entre 1.200€ e "
+                    "1.500€ mensais, 20 horas por semana."
+                )
+            }
+        )
+
+        self.assertEqual(normalized["work_mode"], "remote")
+        self.assertEqual(normalized["work_schedule"], "part_time")
+        self.assertEqual(normalized["salary_interval"], "monthly")
+        self.assertEqual(normalized["salary_annual_min"], 14400)
+        self.assertEqual(normalized["salary_annual_max"], 18000)
+        self.assertEqual(normalized["work_hours_label"], "20 h/week")
 
 
 class SearchTermTests(unittest.TestCase):
@@ -397,6 +434,31 @@ class StorageTests(unittest.TestCase):
             )
 
         self.assertEqual([row["job_id"] for row in rows], ["hybrid-1"])
+
+    def test_min_salary_filter_uses_annualized_salary(self) -> None:
+        profile = UserProfile(target_titles=["backend engineer"])
+        monthly_job = {
+            "id": "monthly-1",
+            "title": "Backend Engineer",
+            "description": "Remote full-time role paying 2.000€ mensais.",
+            "date_posted": "2026-06-26",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "job_finger_data"
+            JobLake(data_path).save_search_result(
+                search_name="test-search",
+                search_term="backend engineer",
+                location="Portugal",
+                sites=["indeed"],
+                ranked_jobs=[
+                    RankedJob("monthly-1", monthly_job, score_job(monthly_job, profile)),
+                ],
+            )
+
+            rows = list_ranked_jobs(data_path, limit=10, min_salary=20000)
+
+        self.assertEqual([row["job_id"] for row in rows], ["monthly-1"])
+        self.assertEqual(rows[0]["salary_annual_max"], 24000)
 
     def test_ranked_jobs_can_filter_by_match_quality_fields(self) -> None:
         profile = UserProfile(

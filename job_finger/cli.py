@@ -76,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     rank_parser.add_argument("--published-from")
     rank_parser.add_argument("--published-to")
     rank_parser.add_argument("--work-mode", choices=["remote", "hybrid", "office", "unknown"])
+    rank_parser.add_argument(
+        "--work-schedule",
+        choices=["full_time", "part_time", "flexible", "shift", "unknown"],
+    )
     rank_parser.add_argument("--seniority", choices=["intern", "junior", "mid", "senior", "unknown"])
     rank_parser.add_argument("--min-salary", type=float)
     rank_parser.add_argument("--recommendation", choices=["priority", "strong", "review", "low"])
@@ -236,6 +240,7 @@ def cmd_rank(args) -> int:
         published_from=args.published_from,
         published_to=args.published_to,
         work_mode=args.work_mode,
+        work_schedule=args.work_schedule,
         seniority=args.seniority,
         min_salary=args.min_salary,
         recommendation=args.recommendation,

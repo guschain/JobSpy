@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Mapping
 
 from job_finger.resume import COMMON_SKILLS, extract_resume_keywords, normalize_text
@@ -93,19 +94,43 @@ def analyze_job_match(
 
 
 def normalize_job_fields(job: Mapping[str, Any]) -> dict[str, Any]:
-    min_salary = _safe_float(job.get("min_amount"))
-    max_salary = _safe_float(job.get("max_amount"))
+    salary = extract_salary(job)
+    work_hours = extract_work_hours(job)
     return {
-        "salary_min": min_salary,
-        "salary_max": max_salary,
-        "salary_currency": job.get("currency"),
-        "salary_interval": job.get("interval"),
-        "salary_label": salary_label(job),
-        "salary_source": job.get("salary_source"),
+        **salary,
         "work_mode": infer_work_mode(job),
+        "work_schedule": infer_work_schedule(job),
+        **work_hours,
         "seniority": infer_seniority(job),
         "employment_type": normalize_text(job.get("job_type")) or None,
         "published_at": job.get("date_posted"),
+    }
+
+
+def extract_salary(job: Mapping[str, Any]) -> dict[str, Any]:
+    direct = _direct_salary(job)
+    if direct["salary_min"] is not None or direct["salary_max"] is not None:
+        return direct
+    parsed = _salary_from_text(_raw_job_text(job))
+    if parsed:
+        return parsed
+    return _salary_record()
+
+
+def extract_work_hours(job: Mapping[str, Any]) -> dict[str, Any]:
+    text = _raw_job_text(job)
+    hours = _hours_from_text(text)
+    if not hours:
+        return {
+            "hours_per_week_min": None,
+            "hours_per_week_max": None,
+            "work_hours_label": "",
+        }
+    minimum, maximum = hours
+    return {
+        "hours_per_week_min": minimum,
+        "hours_per_week_max": maximum,
+        "work_hours_label": _format_hours_label(minimum, maximum),
     }
 
 
@@ -113,12 +138,33 @@ def infer_work_mode(job: Mapping[str, Any]) -> str:
     if _truthy(job.get("is_remote")):
         return "remote"
     text = _job_text(job)
-    if "remote" in text or "teletrabalho" in text or "work from home" in text:
+    if "remote" in text or "remoto" in text or "remota" in text:
+        return "remote"
+    if "teletrabalho" in text or "work from home" in text:
         return "remote"
     if "hybrid" in text or "hibrido" in text or "hibrida" in text:
         return "hybrid"
     if "presencial" in text or "in office" in text or "on site" in text or "onsite" in text:
         return "office"
+    return "unknown"
+
+
+def infer_work_schedule(job: Mapping[str, Any]) -> str:
+    job_type = normalize_text(job.get("job_type"))
+    text = _job_text(job)
+    combined = f" {job_type} {text} "
+    if any(term in combined for term in ("parttime", "part time", "part-time")):
+        return "part_time"
+    if "tempo parcial" in combined or "meio periodo" in combined:
+        return "part_time"
+    if any(term in combined for term in ("fulltime", "full time", "full-time")):
+        return "full_time"
+    if "tempo inteiro" in combined or "horario completo" in combined:
+        return "full_time"
+    if any(term in combined for term in ("flexible", "flexivel", "flexible schedule")):
+        return "flexible"
+    if any(term in combined for term in ("shift", "turnos", "rotativo", "rotating")):
+        return "shift"
     return "unknown"
 
 
@@ -135,17 +181,7 @@ def infer_seniority(job: Mapping[str, Any]) -> str:
 
 
 def salary_label(job: Mapping[str, Any]) -> str:
-    min_amount = _safe_float(job.get("min_amount"))
-    max_amount = _safe_float(job.get("max_amount"))
-    currency = str(job.get("currency") or "").strip()
-    interval = str(job.get("interval") or "").strip()
-    if min_amount is not None and max_amount is not None and min_amount != max_amount:
-        label = f"{_compact_money(min_amount)}-{_compact_money(max_amount)} {currency}"
-    elif max_amount is not None or min_amount is not None:
-        label = f"{_compact_money(max_amount if max_amount is not None else min_amount)} {currency}"
-    else:
-        return ""
-    return f"{label.strip()} {interval}".strip()
+    return str(extract_salary(job).get("salary_label") or "")
 
 
 def draft_cover_letter(
@@ -216,6 +252,8 @@ def _application_suggestions(
         suggestions.append("Salary is not explicit; ask or infer before prioritizing.")
     if normalized.get("work_mode") == "unknown":
         suggestions.append("Work mode is unclear; verify remote/hybrid/office setup.")
+    if normalized.get("work_hours_label"):
+        suggestions.append(f"Working hours captured: {normalized['work_hours_label']}.")
     if negative_keywords:
         suggestions.append(f"Negative signals found: {_join_terms(negative_keywords[:4])}.")
     return suggestions
@@ -261,6 +299,7 @@ def _match_explanation(
         "Normalized signals: "
         f"{normalized.get('seniority') or 'unknown'} seniority, "
         f"{normalized.get('work_mode') or 'unknown'} work mode, "
+        f"{normalized.get('work_schedule') or 'unknown'} schedule, "
         f"{normalized.get('salary_label') or 'salary not shown'}."
     )
     return explanation
@@ -381,6 +420,269 @@ def _job_text(job: Mapping[str, Any]) -> str:
         "work_from_home_type",
     ]
     return normalize_text(" ".join(str(job.get(field) or "") for field in fields))
+
+
+def _raw_job_text(job: Mapping[str, Any]) -> str:
+    fields = [
+        "title",
+        "company",
+        "location",
+        "description",
+        "job_function",
+        "company_industry",
+        "job_level",
+        "skills",
+        "work_from_home_type",
+    ]
+    return " ".join(str(job.get(field) or "") for field in fields)
+
+
+def _salary_record(
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    currency: str | None = None,
+    interval: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    annual_min = _annualize_salary(minimum, interval)
+    annual_max = _annualize_salary(maximum, interval)
+    return {
+        "salary_min": minimum,
+        "salary_max": maximum,
+        "salary_annual_min": annual_min,
+        "salary_annual_max": annual_max,
+        "salary_currency": currency,
+        "salary_interval": interval,
+        "salary_label": _format_salary_label(minimum, maximum, currency, interval),
+        "salary_source": source,
+    }
+
+
+def _direct_salary(job: Mapping[str, Any]) -> dict[str, Any]:
+    minimum = _safe_float(job.get("min_amount"))
+    maximum = _safe_float(job.get("max_amount"))
+    interval = _normalize_salary_interval(job.get("interval"))
+    currency = _normalize_currency(job.get("currency"))
+    source = job.get("salary_source")
+    if minimum is not None or maximum is not None:
+        source = str(source or "direct_data")
+    return _salary_record(
+        minimum=minimum,
+        maximum=maximum,
+        currency=currency,
+        interval=interval,
+        source=source,
+    )
+
+
+def _salary_from_text(text: str) -> dict[str, Any] | None:
+    compact = re.sub(r"\s+", " ", text)
+    patterns = [
+        re.compile(
+            r"(?P<currency>€|eur)\s*(?P<min>\d[\d\s.,]*(?:k)?)\s*"
+            r"(?:-|–|—|to|and|e|a|ate|até)\s*(?:€|eur)?\s*"
+            r"(?P<max>\d[\d\s.,]*(?:k)?)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?P<min>\d[\d\s.,]*(?:k)?)\s*(?P<currency>€|eur)\s*"
+            r"(?:-|–|—|to|and|e|a|ate|até)\s*"
+            r"(?P<max>\d[\d\s.,]*(?:k)?)\s*(?:€|eur)?",
+            re.IGNORECASE,
+        ),
+    ]
+    for pattern in patterns:
+        match = pattern.search(compact)
+        if not match:
+            continue
+        minimum = _parse_money(match.group("min"))
+        maximum = _parse_money(match.group("max"))
+        if minimum is None and maximum is None:
+            continue
+        minimum, maximum = _ordered_range(minimum, maximum)
+        context = _match_context(compact, match.start(), match.end())
+        interval = _infer_salary_interval(context, maximum or minimum)
+        return _salary_record(
+            minimum=minimum,
+            maximum=maximum,
+            currency=_normalize_currency(match.group("currency")),
+            interval=interval,
+            source="description",
+        )
+
+    single_patterns = [
+        re.compile(r"(?P<currency>€|eur)\s*(?P<amount>\d[\d\s.,]*(?:k)?)", re.IGNORECASE),
+        re.compile(r"(?P<amount>\d[\d\s.,]*(?:k)?)\s*(?P<currency>€|eur)", re.IGNORECASE),
+    ]
+    for pattern in single_patterns:
+        match = pattern.search(compact)
+        if not match:
+            continue
+        amount = _parse_money(match.group("amount"))
+        if amount is None:
+            continue
+        context = _match_context(compact, match.start(), match.end())
+        interval = _infer_salary_interval(context, amount)
+        return _salary_record(
+            minimum=amount,
+            maximum=amount,
+            currency=_normalize_currency(match.group("currency")),
+            interval=interval,
+            source="description",
+        )
+    return None
+
+
+def _parse_money(value: str) -> float | None:
+    raw = normalize_text(value).replace(" ", "")
+    if not raw:
+        return None
+    multiplier = 1000 if raw.endswith("k") else 1
+    raw = raw.rstrip("k")
+    if "," in raw and "." in raw:
+        if raw.rfind(",") > raw.rfind("."):
+            raw = raw.replace(".", "").replace(",", ".")
+        else:
+            raw = raw.replace(",", "")
+    elif "," in raw:
+        parts = raw.split(",")
+        raw = "".join(parts) if len(parts[-1]) == 3 else raw.replace(",", ".")
+    elif "." in raw:
+        parts = raw.split(".")
+        if len(parts) > 1 and len(parts[-1]) == 3:
+            raw = "".join(parts)
+    try:
+        parsed = float(raw) * multiplier
+    except ValueError:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _ordered_range(
+    minimum: float | None, maximum: float | None
+) -> tuple[float | None, float | None]:
+    if minimum is not None and maximum is not None and minimum > maximum:
+        return maximum, minimum
+    return minimum, maximum
+
+
+def _match_context(text: str, start: int, end: int, radius: int = 80) -> str:
+    return text[max(0, start - radius) : min(len(text), end + radius)]
+
+
+def _normalize_currency(value: Any) -> str | None:
+    if "€" in str(value):
+        return "EUR"
+    text = normalize_text(value)
+    if not text:
+        return None
+    if text in {"eur", "euro", "euros"}:
+        return "EUR"
+    return str(value).strip().upper()
+
+
+def _normalize_salary_interval(value: Any) -> str | None:
+    text = normalize_text(value)
+    if not text:
+        return None
+    if any(term in text for term in ("year", "annual", "ano", "anual")):
+        return "yearly"
+    if any(term in text for term in ("month", "mensal", "mensais", "mens", "mes")):
+        return "monthly"
+    if any(term in text for term in ("week", "semana")):
+        return "weekly"
+    if any(term in text for term in ("day", "dia")):
+        return "daily"
+    if any(term in text for term in ("hour", "hora")):
+        return "hourly"
+    return None
+
+
+def _infer_salary_interval(context: str, amount: float | None) -> str | None:
+    normalized = normalize_text(context)
+    explicit = _normalize_salary_interval(normalized)
+    if explicit:
+        return explicit
+    if amount is None:
+        return None
+    if amount >= 10000:
+        return "yearly"
+    if amount >= 700:
+        return "monthly"
+    if amount <= 250:
+        return "hourly"
+    return None
+
+
+def _annualize_salary(value: float | None, interval: str | None) -> float | None:
+    if value is None:
+        return None
+    multipliers = {
+        "yearly": 1,
+        "monthly": 12,
+        "weekly": 52,
+        "daily": 220,
+        "hourly": 2080,
+    }
+    return value * multipliers.get(str(interval or ""), 1)
+
+
+def _format_salary_label(
+    minimum: float | None,
+    maximum: float | None,
+    currency: str | None,
+    interval: str | None,
+) -> str:
+    if minimum is not None and maximum is not None and minimum != maximum:
+        label = f"{_compact_money(minimum)}-{_compact_money(maximum)}"
+    elif maximum is not None or minimum is not None:
+        label = _compact_money(maximum if maximum is not None else minimum)
+    else:
+        return ""
+    suffix = " ".join(item for item in (currency, interval) if item)
+    return f"{label} {suffix}".strip()
+
+
+def _hours_from_text(text: str) -> tuple[float, float] | None:
+    compact = re.sub(r"\s+", " ", text)
+    range_pattern = re.compile(
+        r"(?P<min>\d{1,2})\s*(?:-|–|—|to|a)\s*(?P<max>\d{1,2})\s*"
+        r"(?:h|hours?|horas?)\s*(?:/|per|por)?\s*(?:week|semana|weekly|semanais)?",
+        re.IGNORECASE,
+    )
+    match = range_pattern.search(compact)
+    if match:
+        minimum = float(match.group("min"))
+        maximum = float(match.group("max"))
+        context = _match_context(compact, match.start(), match.end())
+        normalized_context = normalize_text(context)
+        has_week_context = any(
+            term in normalized_context
+            for term in ("week", "semana", "weekly", "semanais")
+        )
+        if 1 <= minimum <= maximum <= 80 and (has_week_context or maximum > 24):
+            return minimum, maximum
+
+    single_pattern = re.compile(
+        r"(?P<hours>\d{1,2})\s*(?:h|hours?|horas?)\s*"
+        r"(?:/|per|por)?\s*(?:week|semana|weekly|semanais)",
+        re.IGNORECASE,
+    )
+    match = single_pattern.search(compact)
+    if match:
+        hours = float(match.group("hours"))
+        if 1 <= hours <= 80:
+            return hours, hours
+    return None
+
+
+def _format_hours_label(minimum: float, maximum: float) -> str:
+    if minimum == maximum:
+        return f"{minimum:g} h/week"
+    return f"{minimum:g}-{maximum:g} h/week"
 
 
 def _term_in_text(term: str, text: str) -> bool:

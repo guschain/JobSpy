@@ -131,6 +131,7 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
         published_from = _first_query(query, "published_from") or None
         published_to = _first_query(query, "published_to") or None
         work_mode = _first_query(query, "work_mode") or None
+        work_schedule = _first_query(query, "work_schedule") or None
         seniority = _first_query(query, "seniority") or None
         min_salary = _float_query(query, "min_salary", None)
         recommendation = _first_query(query, "recommendation") or None
@@ -155,6 +156,7 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
             published_from=published_from,
             published_to=published_to,
             work_mode=work_mode,
+            work_schedule=work_schedule,
             seniority=seniority,
             min_salary=min_salary,
             recommendation=recommendation,
@@ -419,7 +421,11 @@ def _list_row(row: dict[str, Any]) -> dict[str, Any]:
         "date_posted": row.get("date_posted"),
         "published_at": row.get("date_posted"),
         "salary_label": salary_label(row),
+        "salary_annual_min": row.get("salary_annual_min"),
+        "salary_annual_max": row.get("salary_annual_max"),
         "work_mode": row.get("work_mode") or infer_work_mode_label(row),
+        "work_schedule": row.get("work_schedule"),
+        "work_hours_label": row.get("work_hours_label"),
         "seniority": row.get("seniority"),
         "skills": row.get("skills", []),
         "cv_matched_keywords": row.get("cv_matched_keywords", []),
@@ -446,7 +452,11 @@ def _ranked_row(item: Any) -> dict[str, Any]:
         "site": item.job.get("site"),
         "date_posted": item.job.get("date_posted"),
         "salary_label": normalized.get("salary_label") or salary_label(item.job),
+        "salary_annual_min": normalized.get("salary_annual_min"),
+        "salary_annual_max": normalized.get("salary_annual_max"),
         "work_mode": infer_work_mode_label(item.job),
+        "work_schedule": normalized.get("work_schedule"),
+        "work_hours_label": normalized.get("work_hours_label"),
         "seniority": normalized.get("seniority"),
         "skills": item.score.analysis.get("job_skills", []),
         "cv_matched_keywords": item.score.analysis.get("cv_matched_keywords", []),
@@ -470,6 +480,8 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "remote": _count_value(rows, "work_mode", "remote"),
         "hybrid": _count_value(rows, "work_mode", "hybrid"),
         "office": _count_value(rows, "work_mode", "office"),
+        "full_time": _count_value(rows, "work_schedule", "full_time"),
+        "part_time": _count_value(rows, "work_schedule", "part_time"),
         "with_salary": sum(1 for row in rows if row.get("salary_label") or row.get("salary_max") or row.get("salary_min")),
         "with_cv_matches": sum(1 for row in rows if _list_count(row.get("cv_matched_keywords")) > 0),
         "with_cv_evidence": sum(1 for row in rows if _list_count(row.get("cv_evidence")) > 0),
@@ -1008,6 +1020,16 @@ INDEX_HTML = r"""<!doctype html>
             <option value="unknown">Unknown</option>
           </select>
         </label>
+        <label>Schedule
+          <select id="workSchedule">
+            <option value="">Any</option>
+            <option value="full_time">Full-time</option>
+            <option value="part_time">Part-time</option>
+            <option value="flexible">Flexible</option>
+            <option value="shift">Shift</option>
+            <option value="unknown">Unknown</option>
+          </select>
+        </label>
         <label>Seniority
           <select id="seniorityFilter">
             <option value="">Any</option>
@@ -1075,6 +1097,7 @@ INDEX_HTML = r"""<!doctype html>
       const excludeKeywords = splitTerms($("excludeKeywords").value);
       const excludeScope = $("excludeScope").value;
       const workMode = $("workMode").value;
+      const workSchedule = $("workSchedule").value;
       const seniority = $("seniorityFilter").value;
       const minSalary = $("minSalary").value;
       const recommendation = $("recommendationFilter").value;
@@ -1091,6 +1114,7 @@ INDEX_HTML = r"""<!doctype html>
       for (const term of excludeKeywords) params.append("exclude_keyword", term);
       if (excludeKeywords.length) params.set("exclude_scope", excludeScope);
       if (workMode) params.set("work_mode", workMode);
+      if (workSchedule) params.set("work_schedule", workSchedule);
       if (seniority) params.set("seniority", seniority);
       if (minSalary) params.set("min_salary", minSalary);
       if (recommendation) params.set("recommendation", recommendation);
@@ -1124,6 +1148,7 @@ INDEX_HTML = r"""<!doctype html>
         [`${summary.with_gaps || 0}`, "With Gaps"],
         [`${summary.with_salary || 0}`, "With Salary"],
         [`${summary.remote || 0}/${summary.hybrid || 0}`, "Remote / Hybrid"],
+        [`${summary.full_time || 0}/${summary.part_time || 0}`, "Full / Part Time"],
         [`${summary.with_negative || 0}`, "Negative Signals"],
         [`${summary.average_score || 0}`, "Avg Score"],
       ];
@@ -1160,6 +1185,8 @@ INDEX_HTML = r"""<!doctype html>
               <span class="pill">${escapeHtml(job.site || "")}</span>
               ${job.salary_label ? `<span class="pill">${escapeHtml(job.salary_label)}</span>` : ""}
               ${job.work_mode ? `<span class="pill">${escapeHtml(job.work_mode)}</span>` : ""}
+              ${showSchedule(job) ? `<span class="pill">${escapeHtml(formatSchedule(job.work_schedule))}</span>` : ""}
+              ${job.work_hours_label ? `<span class="pill">${escapeHtml(job.work_hours_label)}</span>` : ""}
               ${job.seniority ? `<span class="pill">${escapeHtml(job.seniority)}</span>` : ""}
               ${showCvStrength(job) ? `<span class="pill">CV ${escapeHtml(job.cv_match_strength)}</span>` : ""}
               ${job.job_type ? `<span class="pill">${escapeHtml(job.job_type)}</span>` : ""}
@@ -1208,6 +1235,8 @@ INDEX_HTML = r"""<!doctype html>
             ${job.date_posted ? `<span class="pill">Published ${escapeHtml(job.date_posted)}</span>` : ""}
             ${salaryLabel(job) ? `<span class="pill">${escapeHtml(salaryLabel(job))}</span>` : ""}
             ${job.work_mode ? `<span class="pill">${escapeHtml(job.work_mode)}</span>` : ""}
+            ${showSchedule(job) ? `<span class="pill">${escapeHtml(formatSchedule(job.work_schedule))}</span>` : ""}
+            ${job.work_hours_label ? `<span class="pill">${escapeHtml(job.work_hours_label)}</span>` : ""}
             ${job.seniority ? `<span class="pill">${escapeHtml(job.seniority)}</span>` : ""}
             ${showCvStrength(job) ? `<span class="pill">CV ${escapeHtml(job.cv_match_strength)}</span>` : ""}
             ${job.job_type ? `<span class="pill">${escapeHtml(job.job_type)}</span>` : ""}
@@ -1486,6 +1515,14 @@ INDEX_HTML = r"""<!doctype html>
       return job.cv_match_strength && job.cv_match_strength !== "unknown";
     }
 
+    function showSchedule(job) {
+      return job.work_schedule && job.work_schedule !== "unknown";
+    }
+
+    function formatSchedule(value) {
+      return String(value || "").replace("_", "-");
+    }
+
     function compactMoney(value) {
       const number = Number(value);
       if (!Number.isFinite(number)) return String(value || "");
@@ -1493,7 +1530,7 @@ INDEX_HTML = r"""<!doctype html>
       return String(number);
     }
 
-    ["localQuery", "statusFilter", "minScore", "publishedFrom", "publishedTo", "sortBy", "skillKeywords", "excludeKeywords", "excludeScope", "workMode", "seniorityFilter", "minSalary", "recommendationFilter", "minCvMatches", "maxCvGaps", "noNegative"].forEach(id => {
+    ["localQuery", "statusFilter", "minScore", "publishedFrom", "publishedTo", "sortBy", "skillKeywords", "excludeKeywords", "excludeScope", "workMode", "workSchedule", "seniorityFilter", "minSalary", "recommendationFilter", "minCvMatches", "maxCvGaps", "noNegative"].forEach(id => {
       $(id).addEventListener("change", loadJobs);
       $(id).addEventListener("keyup", event => { if (event.key === "Enter") loadJobs(); });
     });

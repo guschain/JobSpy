@@ -194,8 +194,9 @@ The added layer is focused on filtering before applying:
   salary, language, and recency
 - CV PDF ingestion through MarkItDown, converted to `workspace/cv.md` and used
   as extra matching keywords with evidence snippets from the CV
-- normalized job signals for salary, work mode, seniority, detected skills,
-  CV matches, CV gaps, positive/negative keywords, and application suggestions
+- normalized job signals for parsed salary, annualized salary, work mode,
+  schedule/hours, seniority, detected skills, CV matches, CV gaps,
+  positive/negative keywords, and application suggestions
 - simple file storage in one folder: scrape history, latest ranked jobs, and
   application events as JSONL
 - status tracking for saved, applied, follow-up, interview, offer, rejected, and
@@ -289,12 +290,13 @@ uv run job-finger ui
 ```
 
 The UI reads `workspace/data`, runs keyword searches, filters the local job
-list, shows salary/work-mode/seniority/type/date when captured, and displays
-application history. Each job detail has a Match tab with CV matches, likely
-gaps, CV evidence snippets, detected skills, application suggestions, and a
-deterministic cover-letter draft. Use `Save Brief` in that tab to write a
-Markdown prep file into `workspace/briefs/` and a standalone draft into
-`workspace/cover_letters/`. Customize UI observations in
+list, shows salary/work-mode/schedule/hours/seniority/type/date when captured,
+and displays application history. Salary found in the job text is also
+annualized for filtering and sorting. Each job detail has a Match tab with CV
+matches, likely gaps, CV evidence snippets, detected skills, application
+suggestions, and a deterministic cover-letter draft. Use `Save Brief` in that
+tab to write a Markdown prep file into `workspace/briefs/` and a standalone
+draft into `workspace/cover_letters/`. Customize UI observations in
 `workspace/observation_template.md`.
 The list view also includes summary counters and quick actions to save, ignore,
 or generate a brief directly from a listing.

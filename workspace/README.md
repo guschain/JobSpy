@@ -37,6 +37,7 @@ Useful local filters:
 
 ```powershell
 uv run job-finger rank --work-mode hybrid --seniority senior --min-salary 40000
+uv run job-finger rank --work-schedule full_time --sort salary
 uv run job-finger rank --exclude-keyword sap --exclude-scope content
 uv run job-finger rank --min-cv-matches 2 --max-cv-gaps 3 --no-negative
 uv run job-finger rank --sort salary

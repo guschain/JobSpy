@@ -8,7 +8,7 @@ from datetime import date, datetime
 from typing import Any, Mapping
 
 from job_finger.config import UserProfile
-from job_finger.matching import analyze_job_match
+from job_finger.matching import analyze_job_match, normalize_job_fields
 
 
 SENIORITY_TERMS = {
@@ -132,9 +132,10 @@ def _truthy(value: Any) -> bool:
 def _salary_score(job: Mapping[str, Any], minimum_salary_eur: int | None) -> float | None:
     if not minimum_salary_eur:
         return None
-    currency = normalize_text(job.get("currency"))
-    min_amount = _safe_float(job.get("min_amount"))
-    max_amount = _safe_float(job.get("max_amount"))
+    normalized = normalize_job_fields(job)
+    currency = normalize_text(normalized.get("salary_currency"))
+    min_amount = _safe_float(normalized.get("salary_annual_min"))
+    max_amount = _safe_float(normalized.get("salary_annual_max"))
     best_amount = max(amount for amount in [min_amount, max_amount] if amount is not None) if any(
         amount is not None for amount in [min_amount, max_amount]
     ) else None

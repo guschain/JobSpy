@@ -44,6 +44,8 @@ def build_application_brief(job: Mapping[str, Any], profile: UserProfile) -> str
         f"- Estimated fit probability: {probability}%",
         f"- Status: {job.get('application_status', 'new')}",
         f"- Work mode: {job.get('work_mode') or 'unknown'}",
+        f"- Schedule: {job.get('work_schedule') or 'unknown'}",
+        f"- Hours: {job.get('work_hours_label') or 'not shown'}",
         f"- Seniority: {job.get('seniority') or 'unknown'}",
         f"- Salary: {job.get('salary_label') or 'not shown'}",
         f"- URL: {job.get('job_url_direct') or job.get('job_url') or ''}",
