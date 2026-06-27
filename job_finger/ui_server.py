@@ -1038,6 +1038,28 @@ INDEX_HTML = r"""<!doctype html>
       margin: 7px;
       align-self: center;
     }
+    .category-bar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      overflow-x: auto;
+      padding: 2px 0 4px;
+      max-width: 1120px;
+    }
+    .category-chip {
+      border: 0;
+      border-radius: 0;
+      border-bottom: 2px solid transparent;
+      padding: 8px 2px 9px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 13px;
+    }
+    .category-chip:hover,
+    .category-chip.active {
+      color: var(--text);
+      border-bottom-color: var(--text);
+    }
     .search-progress {
       display: grid;
       gap: 9px;
@@ -1097,7 +1119,7 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       border-radius: 14px;
       background: var(--soft);
-      padding: 10px 12px;
+      padding: 8px 10px;
       min-width: 0;
       max-width: 1120px;
     }
@@ -1130,7 +1152,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     main {
       display: grid;
-      grid-template-columns: minmax(420px, 45%) minmax(460px, 1fr);
+      grid-template-columns: minmax(620px, 58%) minmax(420px, 1fr);
       min-height: calc(100vh - 214px);
     }
     aside {
@@ -1205,14 +1227,13 @@ INDEX_HTML = r"""<!doctype html>
       overflow: auto;
       max-height: calc(100vh - 344px);
       display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
       gap: 14px;
       padding: 0 18px 18px;
     }
     .job-row {
       width: 100%;
-      display: grid;
-      grid-template-columns: 112px 1fr;
-      gap: 14px;
+      display: block;
       padding: 0;
       border: 1px solid var(--line);
       border-radius: 16px;
@@ -1226,7 +1247,7 @@ INDEX_HTML = r"""<!doctype html>
       box-shadow: 0 9px 24px rgba(34, 34, 34, .10);
     }
     .card-visual {
-      min-height: 144px;
+      min-height: 166px;
       padding: 12px;
       display: grid;
       align-content: space-between;
@@ -1257,7 +1278,7 @@ INDEX_HTML = r"""<!doctype html>
     .card-body {
       display: grid;
       gap: 7px;
-      padding: 14px 14px 12px 0;
+      padding: 13px 13px 12px;
       min-width: 0;
     }
     .card-top {
@@ -1371,6 +1392,8 @@ INDEX_HTML = r"""<!doctype html>
       overflow: auto;
       max-height: calc(100vh - 214px);
       background: #fff;
+      position: sticky;
+      top: 214px;
     }
     .detail-head {
       padding: 22px 24px 18px;
@@ -1490,18 +1513,74 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
     }
     @media (max-width: 900px) {
-      .toolbar, .cv-panel, main, .filters, .exclude-filters, .summary-strip, .form-grid {
+      .cv-panel, main, .filters, .exclude-filters, .summary-strip, .form-grid {
         grid-template-columns: 1fr;
       }
-      .toolbar { border-radius: 18px; }
-      .toolbar label { border-right: 0; border-bottom: 1px solid var(--line); }
+      header { padding: 16px 18px 12px; }
+      .brand-subtitle { display: none; }
+      .toolbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+        border-radius: 999px;
+        max-width: 100%;
+      }
+      .toolbar label {
+        border: 0;
+        padding: 11px 18px;
+      }
+      .toolbar label:not(:first-child) {
+        display: none;
+      }
+      .toolbar button {
+        width: 46px;
+        min-height: 46px;
+        padding: 0;
+        margin: 5px;
+        overflow: hidden;
+        color: transparent;
+        position: relative;
+      }
+      .toolbar button::after {
+        content: "Search";
+        color: #fff;
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 0;
+      }
+      .toolbar button::before {
+        content: "";
+        width: 14px;
+        height: 14px;
+        border: 2px solid #fff;
+        border-radius: 50%;
+        position: absolute;
+        left: 14px;
+        top: 13px;
+      }
+      .toolbar button::after {
+        width: 8px;
+        height: 2px;
+        background: #fff;
+        transform: rotate(45deg);
+        left: 27px;
+        top: 28px;
+        inset: auto;
+      }
       .cv-actions { justify-content: start; }
-      .detail-story, .highlight-row, .job-row {
+      .summary-strip {
+        display: flex;
+        overflow-x: auto;
+      }
+      .summary-item {
+        min-width: 116px;
+      }
+      .detail-story, .highlight-row {
         grid-template-columns: 1fr;
       }
-      .card-body { padding: 0 14px 14px; }
       section.detail, .job-list {
         max-height: none;
+        position: static;
       }
     }
   </style>
@@ -1532,6 +1611,15 @@ INDEX_HTML = r"""<!doctype html>
         </select>
       </label>
       <button class="primary" id="runSearch">Search</button>
+    </div>
+    <div class="category-bar">
+      <button class="category-chip" data-chip="remote">Remote</button>
+      <button class="category-chip" data-chip="hybrid">Hybrid</button>
+      <button class="category-chip" data-chip="salary">Salary shown</button>
+      <button class="category-chip" data-chip="cv">CV match</button>
+      <button class="category-chip" data-chip="fresh">Fresh</button>
+      <button class="category-chip" data-chip="senior">Senior</button>
+      <button class="category-chip" data-chip="clean">No negatives</button>
     </div>
     <div id="searchProgress" class="search-progress hidden"></div>
     <div id="cvPanel" class="cv-panel"></div>
@@ -2279,8 +2367,37 @@ INDEX_HTML = r"""<!doctype html>
         .join("");
     }
 
+    function applyCategoryChip(chip) {
+      document.querySelectorAll(".category-chip").forEach(button => button.classList.remove("active"));
+      chip.classList.add("active");
+      const value = chip.dataset.chip;
+      if (value === "remote" || value === "hybrid") {
+        $("workMode").value = value;
+      }
+      if (value === "salary") {
+        $("minSalary").value = $("minSalary").value || "1";
+        $("sortBy").value = "salary";
+      }
+      if (value === "cv") {
+        $("minCvMatches").value = $("minCvMatches").value || "1";
+      }
+      if (value === "fresh") {
+        $("sortBy").value = "newest";
+      }
+      if (value === "senior") {
+        $("seniorityFilter").value = "senior";
+      }
+      if (value === "clean") {
+        $("noNegative").checked = true;
+      }
+      loadJobs();
+    }
+
     $("runSearch").onclick = runSearch;
     $("refresh").onclick = refreshAll;
+    document.querySelectorAll(".category-chip").forEach(button => {
+      button.onclick = () => applyCategoryChip(button);
+    });
     function salaryLabel(job) {
       if (job.salary_label) return job.salary_label;
       const min = job.min_amount;
