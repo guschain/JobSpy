@@ -945,7 +945,7 @@ INDEX_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RelevantFinder</title>
+  <title>Job Finger</title>
   <style>
     :root {
       --bg: #f7f6f3;
@@ -1844,7 +1844,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="brand">
         <div class="brand-mark">RF</div>
         <div>
-          <h1>RelevantFinder</h1>
+          <h1>Job Finger</h1>
           <div class="brand-subtitle">Find, rank, and track Portugal-ready roles.</div>
         </div>
       </div>
