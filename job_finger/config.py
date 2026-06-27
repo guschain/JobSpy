@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from job_finger.resume import extract_resume_keywords
+from job_finger.resume import analyze_resume_text, extract_resume_keywords
 from job_finger.search_terms import DEFAULT_RELATED_KEYWORD_GROUPS, unique_terms
 
 
@@ -207,6 +207,16 @@ def _load_resume_keywords(
     if not resume_path.exists() or resume_path.suffix.lower() == ".pdf":
         return replace(profile, resume_profile=resume_profile)
     text = resume_path.read_text(encoding="utf-8-sig")
+    generated_profile = analyze_resume_text(
+        text,
+        extra_terms=[
+            *profile.must_have_keywords,
+            *profile.nice_to_have_keywords,
+            *profile.target_titles,
+            *_string_list(resume_profile.get("titles")),
+        ],
+    )
+    resume_profile = _merge_resume_profiles(resume_profile, generated_profile)
     keywords = unique_terms(
         [
             *profile.resume_keywords,
@@ -241,6 +251,43 @@ def _load_resume_keywords(
         languages=languages,
         resume_profile=resume_profile,
     )
+
+
+def _merge_resume_profiles(
+    configured: dict[str, Any], generated: dict[str, Any]
+) -> dict[str, Any]:
+    merged = {**generated, **configured}
+    for field_name in ("keywords", "titles", "languages", "seniority"):
+        merged[field_name] = unique_terms(
+            [
+                *_string_list(generated.get(field_name)),
+                *_string_list(configured.get(field_name)),
+            ]
+        )
+    merged["evidence"] = _merge_evidence_maps(
+        dict(generated.get("evidence") or {}),
+        dict(configured.get("evidence") or {}),
+    )
+    generated_signals = _string_list(generated.get("summary_signals"))
+    configured_signals = _string_list(configured.get("summary_signals"))
+    merged["summary_signals"] = unique_terms([*generated_signals, *configured_signals])
+    return merged
+
+
+def _merge_evidence_maps(
+    generated: dict[str, Any], configured: dict[str, Any]
+) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for source in (generated, configured):
+        for term, snippets in source.items():
+            values = _string_list(snippets)
+            if not values:
+                continue
+            existing = merged.setdefault(str(term), [])
+            for value in values:
+                if value not in existing:
+                    existing.append(value)
+    return merged
 
 
 def _load_resume_profile(

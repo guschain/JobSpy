@@ -16,7 +16,7 @@ The app writes output here:
 - `data/applications.jsonl`: applications, notes, and status events.
 - `data/feedback.jsonl`: negative keywords learned from bad recommendations.
 - `cv.md`: text extracted from `cv.pdf` by MarkItDown.
-- `cv_profile.json`: structured CV signals generated from `cv.md`.
+- `cv_profile.json`: structured CV signals and evidence snippets generated from `cv.md`.
 - `briefs/`: application prep briefs.
 - `cover_letters/`: standalone cover-letter drafts.
 - `exports/`: optional CSV exports.
@@ -29,7 +29,8 @@ Start from the repo root:
 .\start-ui.ps1
 ```
 
-All three scripts run through `uv`. If the UI is already running,
+All three scripts run through `uv`. `.\update-cv.ps1` also re-scores existing
+stored jobs when `data/jobs.jsonl` exists. If the UI is already running,
 `.\start-ui.ps1` prints the existing local URL instead of starting a duplicate.
 
 Useful local filters:
@@ -41,7 +42,7 @@ uv run job-finger rank --min-cv-matches 2 --max-cv-gaps 3 --no-negative
 uv run job-finger rank --sort salary
 ```
 
-The UI Match tab shows detected job skills, CV matches, likely gaps,
-application suggestions, and a cover-letter draft for each stored job. Use
-`Save Brief` there to write a Markdown brief into `workspace/briefs/` and a
-standalone cover letter into `workspace/cover_letters/`.
+The UI Match tab shows detected job skills, CV matches, CV evidence snippets,
+likely gaps, application suggestions, and a cover-letter draft for each stored
+job. Use `Save Brief` there to write a Markdown brief into `workspace/briefs/`
+and a standalone cover letter into `workspace/cover_letters/`.

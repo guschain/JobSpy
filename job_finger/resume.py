@@ -167,11 +167,13 @@ def analyze_resume_text(
     titles = _extract_terms(normalized, COMMON_TITLES)
     languages = _extract_terms(normalized, COMMON_LANGUAGES)
     seniority = _extract_terms(normalized, SENIORITY_SIGNALS)
+    evidence_terms = _unique_terms([*keywords, *titles, *languages, *seniority])
     return {
         "keywords": keywords,
         "titles": titles,
         "languages": languages,
         "seniority": seniority,
+        "evidence": extract_term_evidence(text, evidence_terms),
         "source_chars": len(text),
         "summary_signals": _summary_signals(
             keywords=keywords,
@@ -197,6 +199,34 @@ def extract_resume_keywords(text: str, extra_terms: list[str] | None = None) -> 
     return found
 
 
+def extract_term_evidence(
+    text: str,
+    terms: list[str],
+    *,
+    max_snippets_per_term: int = 2,
+    max_snippet_chars: int = 220,
+) -> dict[str, list[str]]:
+    evidence: dict[str, list[str]] = {}
+    normalized_terms = []
+    for term in _unique_terms(terms):
+        clean_term = normalize_text(term)
+        if clean_term:
+            normalized_terms.append((term, clean_term))
+    for line in _resume_lines(text):
+        normalized_line = normalize_text(line)
+        if not normalized_line:
+            continue
+        for term, clean_term in normalized_terms:
+            snippets = evidence.setdefault(term, [])
+            if len(snippets) >= max_snippets_per_term:
+                continue
+            if _term_in_text(clean_term, normalized_line):
+                snippet = _trim_snippet(line, max_snippet_chars)
+                if snippet not in snippets:
+                    snippets.append(snippet)
+    return {term: snippets for term, snippets in evidence.items() if snippets}
+
+
 def normalize_text(value: Any) -> str:
     if value is None:
         return ""
@@ -219,6 +249,36 @@ def _extract_terms(text: str, terms: list[str]) -> list[str]:
     for term in terms:
         clean = normalize_text(term)
         if clean and clean not in seen and _term_in_text(clean, text):
+            seen.add(clean)
+            found.append(term)
+    return found
+
+
+def _resume_lines(text: str) -> list[str]:
+    lines = []
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        line = line.strip(" -*#\t")
+        if len(line) >= 4:
+            lines.append(line)
+    if lines:
+        return lines
+    return [text.strip()] if text.strip() else []
+
+
+def _trim_snippet(value: str, max_chars: int) -> str:
+    snippet = re.sub(r"\s+", " ", value).strip()
+    if len(snippet) <= max_chars:
+        return snippet
+    return snippet[: max_chars - 3].rstrip() + "..."
+
+
+def _unique_terms(terms: list[str]) -> list[str]:
+    found = []
+    seen = set()
+    for term in terms:
+        clean = normalize_text(term)
+        if clean and clean not in seen:
             seen.add(clean)
             found.append(term)
     return found

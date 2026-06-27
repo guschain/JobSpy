@@ -35,6 +35,8 @@ def analyze_job_match(
     profile_matches = _matching_terms(text, profile_terms)
     avoid_matches = _matching_terms(text, getattr(profile, "avoid_keywords", []))
     cv_gaps = _cv_skill_gaps(job_skills, resume_keywords)
+    cv_evidence = _cv_evidence(cv_matches, _resume_evidence(profile))
+    cv_match_strength = _match_strength(cv_matches, cv_gaps)
     positive_keywords = unique_terms(
         [
             *(matched_keywords or []),
@@ -54,6 +56,7 @@ def analyze_job_match(
         normalized=normalized,
         cv_matches=cv_matches,
         cv_gaps=cv_gaps,
+        cv_evidence=cv_evidence,
         job_skills=job_skills,
         missing_must_haves=missing_must_haves or [],
         penalties=penalties or [],
@@ -62,6 +65,7 @@ def analyze_job_match(
         normalized=normalized,
         cv_matches=cv_matches,
         cv_gaps=cv_gaps,
+        cv_evidence=cv_evidence,
         cover_letter_keywords=cover_letter_keywords,
         negative_keywords=negative_keywords,
     )
@@ -70,6 +74,8 @@ def analyze_job_match(
         "job_skills": job_skills,
         "cv_matched_keywords": cv_matches,
         "cv_missing_keywords": cv_gaps,
+        "cv_evidence": cv_evidence,
+        "cv_match_strength": cv_match_strength,
         "positive_keywords": positive_keywords,
         "negative_keywords": negative_keywords,
         "cover_letter_keywords": cover_letter_keywords,
@@ -81,6 +87,7 @@ def analyze_job_match(
             cv_matches=cv_matches,
             cover_letter_keywords=cover_letter_keywords,
             cv_gaps=cv_gaps,
+            cv_evidence=cv_evidence,
         ),
     }
 
@@ -148,6 +155,7 @@ def draft_cover_letter(
     cv_matches: list[str],
     cover_letter_keywords: list[str],
     cv_gaps: list[str],
+    cv_evidence: list[dict[str, Any]],
 ) -> str:
     title = str(job.get("title") or "this role")
     company = str(job.get("company") or "your team")
@@ -160,6 +168,10 @@ def draft_cover_letter(
             " I would keep the note concise around adjacent experience for "
             f"{_join_terms(cv_gaps[:3])} rather than over-claiming it."
         )
+    evidence_note = ""
+    evidence = _first_evidence_snippet(cv_evidence)
+    if evidence:
+        evidence_note = f" A concrete CV proof point to cite is: {evidence}."
     if not strengths:
         strengths = "the requirements in the posting"
     if not focus:
@@ -169,7 +181,7 @@ def draft_cover_letter(
         f"I am interested in the {title} role at {company}. My background is a fit "
         f"for {strengths}, and I would emphasize practical delivery around {focus}. "
         f"The posting appears to be {work_mode or 'a'} work setup, which I can address "
-        f"directly in the application.{gap_note}\n\n"
+        f"directly in the application.{evidence_note}{gap_note}\n\n"
         f"I would welcome the chance to discuss how my experience can help {company} "
         f"deliver on this role's priorities.\n"
     )
@@ -180,6 +192,7 @@ def _application_suggestions(
     normalized: Mapping[str, Any],
     cv_matches: list[str],
     cv_gaps: list[str],
+    cv_evidence: list[dict[str, Any]],
     cover_letter_keywords: list[str],
     negative_keywords: list[str],
 ) -> list[str]:
@@ -192,6 +205,9 @@ def _application_suggestions(
         suggestions.append(
             f"Use {_join_terms(cover_letter_keywords[:6])} as cover-letter anchors."
         )
+    evidence = _first_evidence_snippet(cv_evidence)
+    if evidence:
+        suggestions.append(f"Cite this CV evidence: {evidence}")
     if cv_gaps:
         suggestions.append(f"Check or explain gaps around {_join_terms(cv_gaps[:5])}.")
     if normalized.get("salary_label"):
@@ -210,6 +226,7 @@ def _match_explanation(
     normalized: Mapping[str, Any],
     cv_matches: list[str],
     cv_gaps: list[str],
+    cv_evidence: list[dict[str, Any]],
     job_skills: list[str],
     missing_must_haves: list[str],
     penalties: list[str],
@@ -219,6 +236,11 @@ def _match_explanation(
         explanation.append(
             f"CV matches {len(cv_matches)} signal(s): {_join_terms(cv_matches[:8])}."
         )
+        evidence_terms = [str(item.get("keyword")) for item in cv_evidence]
+        if evidence_terms:
+            explanation.append(
+                f"CV evidence is available for {_join_terms(evidence_terms[:6])}."
+            )
     else:
         explanation.append(
             "No CV keyword matches yet; add/convert a CV or enrich resume_keywords."
@@ -259,6 +281,62 @@ def _profile_terms(profile: Any) -> list[str]:
             *_list_value(resume_profile.get("seniority")),
         ]
     )
+
+
+def _resume_evidence(profile: Any) -> dict[str, list[str]]:
+    resume_profile = getattr(profile, "resume_profile", {}) or {}
+    raw_evidence = dict(resume_profile.get("evidence") or {})
+    evidence: dict[str, list[str]] = {}
+    for term, snippets in raw_evidence.items():
+        values = _list_value(snippets)
+        if values:
+            evidence[str(term)] = values
+    return evidence
+
+
+def _cv_evidence(
+    cv_matches: list[str], resume_evidence: Mapping[str, list[str]]
+) -> list[dict[str, Any]]:
+    evidence_items: list[dict[str, Any]] = []
+    for term in cv_matches:
+        snippets = _lookup_evidence(term, resume_evidence)
+        if snippets:
+            evidence_items.append({"keyword": term, "snippets": snippets[:2]})
+    return evidence_items
+
+
+def _lookup_evidence(
+    term: str, resume_evidence: Mapping[str, list[str]]
+) -> list[str]:
+    normalized_term = normalize_text(term)
+    snippets: list[str] = []
+    for evidence_term, evidence_snippets in resume_evidence.items():
+        if normalize_text(evidence_term) != normalized_term:
+            continue
+        for snippet in evidence_snippets:
+            if snippet not in snippets:
+                snippets.append(str(snippet))
+    return snippets
+
+
+def _match_strength(cv_matches: list[str], cv_gaps: list[str]) -> str:
+    total = len(cv_matches) + len(cv_gaps)
+    if total == 0:
+        return "unknown"
+    ratio = len(cv_matches) / total
+    if ratio >= 0.75:
+        return "strong"
+    if ratio >= 0.45:
+        return "partial"
+    return "weak"
+
+
+def _first_evidence_snippet(cv_evidence: list[dict[str, Any]]) -> str:
+    for item in cv_evidence:
+        snippets = item.get("snippets") or []
+        if snippets:
+            return str(snippets[0])
+    return ""
 
 
 def _list_value(value: Any) -> list[str]:

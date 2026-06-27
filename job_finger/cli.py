@@ -26,6 +26,7 @@ from job_finger.storage import (
     export_ranked_csv,
     get_job_with_latest_score,
     list_ranked_jobs,
+    rescore_ranked_jobs,
     update_application,
 )
 from job_finger.ui_server import run_ui_server
@@ -90,6 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_keyword_args(rank_parser)
     add_exclude_args(rank_parser)
     rank_parser.set_defaults(func=cmd_rank)
+
+    rescore_parser = subparsers.add_parser(
+        "rescore", help="re-score stored jobs with the current CV/profile"
+    )
+    add_config_data_args(rescore_parser)
+    rescore_parser.set_defaults(func=cmd_rescore)
 
     track_parser = subparsers.add_parser("track", help="update application status")
     add_config_data_args(track_parser)
@@ -250,6 +257,15 @@ def cmd_rank(args) -> int:
         print(f"Wrote {path}")
     else:
         _print_rows(rows)
+    return 0
+
+
+def cmd_rescore(args) -> int:
+    ensure_workspace_files(args.config)
+    config = load_config(args.config)
+    lake_path = config.resolve_storage_path(args.data)
+    count = rescore_ranked_jobs(lake_path, config.profile)
+    print(f"Re-scored {count} stored job(s)")
     return 0
 
 

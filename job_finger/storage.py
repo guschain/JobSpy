@@ -216,6 +216,32 @@ class JobLake:
                 terms.extend(str(term) for term in event.get("negative_terms") or [])
         return unique_terms(terms)
 
+    def rescore_snapshot(self, profile: Any) -> int:
+        from job_finger.scoring import score_job
+
+        now = utc_now()
+        updates: list[dict[str, Any]] = []
+        for row in self.read_ranked_snapshot():
+            job_id = str(row.get("job_id") or "")
+            if not job_id:
+                continue
+            raw_job = dict(row.get("raw_job") or {})
+            if not raw_job:
+                raw_job = _job_from_snapshot(row)
+            score = score_job(raw_job, profile).to_dict()
+            updates.append(
+                _snapshot_record(
+                    job_id=job_id,
+                    job=raw_job,
+                    score=score,
+                    run_id=str(row.get("run_id") or "rescore"),
+                    search_name=str(row.get("search_name") or "rescore"),
+                    seen_at=str(row.get("last_seen_at") or now),
+                )
+            )
+        self._merge_job_snapshot(updates)
+        return len(updates)
+
 
 def list_ranked_jobs(
     data_path: str | Path,
@@ -304,6 +330,10 @@ def learned_negative_terms(data_path: str | Path) -> list[str]:
     return JobLake(data_path).learned_negative_terms()
 
 
+def rescore_ranked_jobs(data_path: str | Path, profile: Any) -> int:
+    return JobLake(data_path).rescore_snapshot(profile)
+
+
 def list_application_events(
     data_path: str | Path, job_id: str | None = None
 ) -> list[dict[str, Any]]:
@@ -378,6 +408,8 @@ def _snapshot_record(
         "skills": analysis.get("job_skills", []),
         "cv_matched_keywords": analysis.get("cv_matched_keywords", []),
         "cv_missing_keywords": analysis.get("cv_missing_keywords", []),
+        "cv_evidence": analysis.get("cv_evidence", []),
+        "cv_match_strength": analysis.get("cv_match_strength"),
         "positive_keywords": analysis.get("positive_keywords", []),
         "negative_keywords": analysis.get("negative_keywords", []),
         "match_explanation": analysis.get("match_explanation", []),
@@ -399,6 +431,27 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def _job_from_snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("job_id"),
+        "site": row.get("site"),
+        "job_url": row.get("job_url"),
+        "job_url_direct": row.get("job_url_direct"),
+        "title": row.get("title"),
+        "company": row.get("company"),
+        "location": row.get("location"),
+        "description": row.get("description"),
+        "date_posted": row.get("date_posted"),
+        "job_type": row.get("job_type"),
+        "interval": row.get("interval"),
+        "min_amount": row.get("min_amount"),
+        "max_amount": row.get("max_amount"),
+        "currency": row.get("currency"),
+        "is_remote": row.get("is_remote"),
+        "company_industry": row.get("company_industry"),
+    }
 
 
 def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:

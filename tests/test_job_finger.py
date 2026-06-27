@@ -9,7 +9,12 @@ from job_finger.config import UserProfile, load_config
 from job_finger.drafts import write_cover_letter
 from job_finger.matching import analyze_job_match
 from job_finger.pipeline import RankedJob
-from job_finger.resume import analyze_resume_text, extract_resume_keywords, write_resume_profile
+from job_finger.resume import (
+    analyze_resume_text,
+    extract_resume_keywords,
+    extract_term_evidence,
+    write_resume_profile,
+)
 from job_finger.scoring import score_job
 from job_finger.search_terms import (
     build_keyword_query,
@@ -22,6 +27,7 @@ from job_finger.storage import (
     learned_negative_terms,
     list_application_events,
     list_ranked_jobs,
+    rescore_ranked_jobs,
     update_application,
 )
 from job_finger.ui_server import DEFAULT_OBSERVATION_TEMPLATE, read_observation_template
@@ -110,6 +116,12 @@ class ScoringTests(unittest.TestCase):
     def test_job_match_analysis_finds_cv_matches_and_gaps(self) -> None:
         profile = UserProfile(
             resume_keywords=["python", "fastapi", "docker"],
+            resume_profile={
+                "evidence": {
+                    "python": ["Built Python APIs for production services."],
+                    "fastapi": ["Delivered FastAPI services with Docker."],
+                }
+            },
             must_have_keywords=["python"],
             avoid_keywords=["commission only"],
         )
@@ -128,6 +140,9 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(analysis["normalized"]["seniority"], "senior")
         self.assertIn("python", [item.lower() for item in analysis["cv_matched_keywords"]])
         self.assertIn("kubernetes", [item.lower() for item in analysis["cv_missing_keywords"]])
+        self.assertEqual(analysis["cv_match_strength"], "partial")
+        self.assertEqual(analysis["cv_evidence"][0]["keyword"], "python")
+        self.assertIn("Built Python APIs", analysis["cover_letter_draft"])
         self.assertTrue(analysis["cover_letter_draft"])
 
 
@@ -220,6 +235,16 @@ class SearchTermTests(unittest.TestCase):
         self.assertIn("backend engineer", [item.lower() for item in profile["titles"]])
         self.assertIn("python", [item.lower() for item in profile["keywords"]])
         self.assertIn("english", [item.lower() for item in profile["languages"]])
+        self.assertIn("python", [item.lower() for item in profile["evidence"]])
+
+    def test_extract_term_evidence_returns_resume_snippets(self) -> None:
+        evidence = extract_term_evidence(
+            "- Built FastAPI services for billing.\n- Led analytics work in SQL.",
+            ["fastapi", "sql"],
+        )
+
+        self.assertEqual(evidence["fastapi"], ["Built FastAPI services for billing."])
+        self.assertEqual(evidence["sql"], ["Led analytics work in SQL."])
 
 
 class StorageTests(unittest.TestCase):
@@ -227,6 +252,10 @@ class StorageTests(unittest.TestCase):
         profile = UserProfile(
             target_titles=["software engineer"],
             must_have_keywords=["python"],
+            resume_keywords=["python"],
+            resume_profile={
+                "evidence": {"python": ["Built Python automation for operations."]}
+            },
             preferred_locations=["Portugal"],
         )
         job = {
@@ -272,6 +301,7 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(rows[0]["application_status"], "applied")
         self.assertIn("skills", rows[0])
         self.assertIn("match_explanation", rows[0])
+        self.assertEqual(rows[0]["cv_evidence"][0]["keyword"], "python")
         self.assertIn("cover_letter_draft", rows[0])
         self.assertTrue(rows[0]["applied_at"])
         self.assertEqual(len(events), 1)
@@ -415,6 +445,43 @@ class StorageTests(unittest.TestCase):
             )
 
         self.assertEqual([row["job_id"] for row in rows], ["good-1"])
+
+    def test_rescore_updates_stored_jobs_with_current_cv_evidence(self) -> None:
+        initial_profile = UserProfile(target_titles=["backend engineer"])
+        current_profile = UserProfile(
+            target_titles=["backend engineer"],
+            resume_keywords=["python", "fastapi"],
+            resume_profile={
+                "evidence": {
+                    "python": ["Built Python services for customer workflows."],
+                    "fastapi": ["Maintained FastAPI APIs in production."],
+                }
+            },
+        )
+        job = {
+            "id": "rescore-1",
+            "title": "Backend Engineer",
+            "description": "Python and FastAPI role.",
+            "date_posted": "2026-06-26",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_path = Path(temp_dir) / "job_finger_data"
+            JobLake(data_path).save_search_result(
+                search_name="test-search",
+                search_term="backend engineer",
+                location="Portugal",
+                sites=["indeed"],
+                ranked_jobs=[
+                    RankedJob("rescore-1", job, score_job(job, initial_profile)),
+                ],
+            )
+
+            count = rescore_ranked_jobs(data_path, current_profile)
+            rows = list_ranked_jobs(data_path, limit=10)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(rows[0]["cv_evidence"][0]["keyword"], "python")
+        self.assertIn("resume_keywords", rows[0]["components"])
 
     def test_learned_negative_terms_affect_no_negative_filter(self) -> None:
         profile = UserProfile(resume_keywords=["python"])

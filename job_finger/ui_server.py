@@ -424,6 +424,8 @@ def _list_row(row: dict[str, Any]) -> dict[str, Any]:
         "skills": row.get("skills", []),
         "cv_matched_keywords": row.get("cv_matched_keywords", []),
         "cv_missing_keywords": row.get("cv_missing_keywords", []),
+        "cv_evidence": row.get("cv_evidence", []),
+        "cv_match_strength": row.get("cv_match_strength"),
         "job_type": row.get("job_type"),
         "last_applied_at": row.get("applied_at"),
         "observations": row.get("application_notes"),
@@ -449,6 +451,8 @@ def _ranked_row(item: Any) -> dict[str, Any]:
         "skills": item.score.analysis.get("job_skills", []),
         "cv_matched_keywords": item.score.analysis.get("cv_matched_keywords", []),
         "cv_missing_keywords": item.score.analysis.get("cv_missing_keywords", []),
+        "cv_evidence": item.score.analysis.get("cv_evidence", []),
+        "cv_match_strength": item.score.analysis.get("cv_match_strength"),
         "job_type": item.job.get("job_type"),
     }
 
@@ -468,6 +472,7 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "office": _count_value(rows, "work_mode", "office"),
         "with_salary": sum(1 for row in rows if row.get("salary_label") or row.get("salary_max") or row.get("salary_min")),
         "with_cv_matches": sum(1 for row in rows if _list_count(row.get("cv_matched_keywords")) > 0),
+        "with_cv_evidence": sum(1 for row in rows if _list_count(row.get("cv_evidence")) > 0),
         "with_gaps": sum(1 for row in rows if _list_count(row.get("cv_missing_keywords")) > 0),
         "with_negative": sum(1 for row in rows if _list_count(row.get("negative_keywords")) > 0),
         "new": _count_value(rows, "application_status", "new"),
@@ -1115,6 +1120,7 @@ INDEX_HTML = r"""<!doctype html>
         [`${summary.total || 0}`, "Listings"],
         [`${summary.priority || 0}/${summary.strong || 0}`, "Priority / Strong"],
         [`${summary.with_cv_matches || 0}`, "With CV Match"],
+        [`${summary.with_cv_evidence || 0}`, "With CV Evidence"],
         [`${summary.with_gaps || 0}`, "With Gaps"],
         [`${summary.with_salary || 0}`, "With Salary"],
         [`${summary.remote || 0}/${summary.hybrid || 0}`, "Remote / Hybrid"],
@@ -1155,6 +1161,7 @@ INDEX_HTML = r"""<!doctype html>
               ${job.salary_label ? `<span class="pill">${escapeHtml(job.salary_label)}</span>` : ""}
               ${job.work_mode ? `<span class="pill">${escapeHtml(job.work_mode)}</span>` : ""}
               ${job.seniority ? `<span class="pill">${escapeHtml(job.seniority)}</span>` : ""}
+              ${showCvStrength(job) ? `<span class="pill">CV ${escapeHtml(job.cv_match_strength)}</span>` : ""}
               ${job.job_type ? `<span class="pill">${escapeHtml(job.job_type)}</span>` : ""}
               ${job.published_at ? `<span class="pill">Published ${escapeHtml(job.published_at)}</span>` : ""}
               ${job.last_applied_at ? `<span class="pill">Applied ${escapeHtml(formatDate(job.last_applied_at))}</span>` : ""}
@@ -1202,6 +1209,7 @@ INDEX_HTML = r"""<!doctype html>
             ${salaryLabel(job) ? `<span class="pill">${escapeHtml(salaryLabel(job))}</span>` : ""}
             ${job.work_mode ? `<span class="pill">${escapeHtml(job.work_mode)}</span>` : ""}
             ${job.seniority ? `<span class="pill">${escapeHtml(job.seniority)}</span>` : ""}
+            ${showCvStrength(job) ? `<span class="pill">CV ${escapeHtml(job.cv_match_strength)}</span>` : ""}
             ${job.job_type ? `<span class="pill">${escapeHtml(job.job_type)}</span>` : ""}
             ${payload.last_applied_at ? `<span class="pill">Last applied ${escapeHtml(formatDate(payload.last_applied_at))}</span>` : ""}
             ${job.next_action_at ? `<span class="pill">Next ${escapeHtml(job.next_action_at)}</span>` : ""}
@@ -1258,6 +1266,10 @@ INDEX_HTML = r"""<!doctype html>
           <div class="match-panel">
             <h3>CV Matches</h3>
             ${listItems(job.cv_matched_keywords || [], "No direct CV matches captured.")}
+          </div>
+          <div class="match-panel">
+            <h3>CV Evidence</h3>
+            ${evidenceItems(job.cv_evidence || [], "No CV evidence snippets captured.")}
           </div>
           <div class="match-panel">
             <h3>Potential Gaps</h3>
@@ -1440,6 +1452,15 @@ INDEX_HTML = r"""<!doctype html>
       return `<ul>${values.slice(0, 20).map(item => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
     }
 
+    function evidenceItems(items, emptyText) {
+      const values = (items || []).filter(item => (item.snippets || []).length);
+      if (!values.length) return `<div class="small">${escapeHtml(emptyText)}</div>`;
+      return `<ul>${values.slice(0, 8).map(item => {
+        const snippets = (item.snippets || []).slice(0, 2).map(snippet => `<li>${escapeHtml(snippet)}</li>`).join("");
+        return `<li><strong>${escapeHtml(item.keyword || "evidence")}</strong><ul>${snippets}</ul></li>`;
+      }).join("")}</ul>`;
+    }
+
     function renderSkillPills(items, limit) {
       return (items || [])
         .filter(item => String(item || "").trim())
@@ -1459,6 +1480,10 @@ INDEX_HTML = r"""<!doctype html>
       if (min && max && min !== max) return `${compactMoney(min)}-${compactMoney(max)} ${currency} ${interval}`.trim();
       if (max || min) return `${compactMoney(max || min)} ${currency} ${interval}`.trim();
       return "";
+    }
+
+    function showCvStrength(job) {
+      return job.cv_match_strength && job.cv_match_strength !== "unknown";
     }
 
     function compactMoney(value) {

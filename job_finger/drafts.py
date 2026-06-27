@@ -20,6 +20,7 @@ def build_application_brief(job: Mapping[str, Any], profile: UserProfile) -> str
     skills = _json_list(job.get("skills"))
     cv_matches = _json_list(job.get("cv_matched_keywords"))
     cv_gaps = _json_list(job.get("cv_missing_keywords"))
+    cv_evidence = _evidence_items(job.get("cv_evidence"))
     suggestions = _json_list(job.get("application_suggestions"))
     explanation = _json_list(job.get("match_explanation"))
     cover_letter = str(job.get("cover_letter_draft") or "").strip()
@@ -67,6 +68,13 @@ def build_application_brief(job: Mapping[str, Any], profile: UserProfile) -> str
         lines.extend(["", "## CV Matches", ""])
         lines.extend(f"- {item}" for item in cv_matches[:15])
 
+    if cv_evidence:
+        lines.extend(["", "## CV Evidence To Cite", ""])
+        for item in cv_evidence[:8]:
+            keyword = item.get("keyword") or "evidence"
+            lines.append(f"- {keyword}:")
+            lines.extend(f"  - {snippet}" for snippet in item.get("snippets", [])[:2])
+
     lines.extend(["", "## Resume Emphasis", ""])
     lines.extend(f"- {item}" for item in resume_focus)
     if not resume_focus:
@@ -111,14 +119,18 @@ def build_cover_letter(job: Mapping[str, Any], profile: UserProfile) -> str:
     matched = _json_list(job.get("cv_matched_keywords")) or _json_list(
         job.get("matched_keywords")
     )
+    evidence = _first_evidence_snippet(_evidence_items(job.get("cv_evidence")))
     focus = ", ".join(matched[:5]) or ", ".join(profile.resume_keywords[:5])
     if not focus:
         focus = "the requirements described in the posting"
+    proof_point = (
+        f" One useful proof point from my CV is: {evidence}." if evidence else ""
+    )
     return (
         "Dear Hiring Team,\n\n"
         f"I am interested in the {title} role at {company}. My background aligns "
         f"with {focus}, and I would focus the application on concrete delivery "
-        "evidence relevant to the role.\n\n"
+        f"evidence relevant to the role.{proof_point}\n\n"
         "I would welcome the chance to discuss how my experience can help your "
         "team deliver on this position's priorities.\n"
     )
@@ -145,3 +157,36 @@ def _json_list(value: Any) -> list[str]:
     if isinstance(parsed, list):
         return [str(item) for item in parsed]
     return [str(parsed)]
+
+
+def _evidence_items(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        snippets = item.get("snippets") or []
+        if isinstance(snippets, str):
+            snippets = [snippets]
+        snippets = [str(snippet) for snippet in snippets if str(snippet).strip()]
+        if snippets:
+            items.append(
+                {"keyword": str(item.get("keyword") or ""), "snippets": snippets}
+            )
+    return items
+
+
+def _first_evidence_snippet(items: list[dict[str, Any]]) -> str:
+    for item in items:
+        snippets = item.get("snippets") or []
+        if snippets:
+            return str(snippets[0])
+    return ""

@@ -193,7 +193,7 @@ The added layer is focused on filtering before applying:
 - explainable fit scoring by skills, title, seniority, location, remote setup,
   salary, language, and recency
 - CV PDF ingestion through MarkItDown, converted to `workspace/cv.md` and used
-  as extra matching keywords
+  as extra matching keywords with evidence snippets from the CV
 - normalized job signals for salary, work mode, seniority, detected skills,
   CV matches, CV gaps, positive/negative keywords, and application suggestions
 - simple file storage in one folder: scrape history, latest ranked jobs, and
@@ -211,7 +211,7 @@ uv run job-finger init
 Fast local workflow from the repo root:
 
 ```powershell
-.\update-cv.ps1      # reads workspace/cv.pdf through MarkItDown
+.\update-cv.ps1      # reads workspace/cv.pdf and re-scores stored jobs
 .\search-jobs.ps1   # scrapes, dedupes, scores, and writes JSONL files
 .\start-ui.ps1      # opens the local app at http://127.0.0.1:8765/
 ```
@@ -221,6 +221,7 @@ generated profile in `workspace/config.json`:
 
 ```bash
 uv run job-finger cv
+uv run job-finger rescore
 uv run job-finger search --top 15
 uv run job-finger rank --min-score 60
 ```
@@ -258,7 +259,7 @@ workspace/
   observation_template.md <- reusable notes template for applications
   cover_letter_template.md
   cv.md                   <- generated from cv.pdf
-  cv_profile.json         <- generated CV keywords/titles/languages
+  cv_profile.json         <- generated CV keywords/titles/languages/evidence
   data/
     jobs.jsonl            <- latest deduped listings
     scrapes.jsonl         <- append-only scrape history
@@ -290,10 +291,11 @@ uv run job-finger ui
 The UI reads `workspace/data`, runs keyword searches, filters the local job
 list, shows salary/work-mode/seniority/type/date when captured, and displays
 application history. Each job detail has a Match tab with CV matches, likely
-gaps, detected skills, application suggestions, and a deterministic cover-letter
-draft. Use `Save Brief` in that tab to write a Markdown prep file into
-`workspace/briefs/` and a standalone draft into `workspace/cover_letters/`.
-Customize UI observations in `workspace/observation_template.md`.
+gaps, CV evidence snippets, detected skills, application suggestions, and a
+deterministic cover-letter draft. Use `Save Brief` in that tab to write a
+Markdown prep file into `workspace/briefs/` and a standalone draft into
+`workspace/cover_letters/`. Customize UI observations in
+`workspace/observation_template.md`.
 The list view also includes summary counters and quick actions to save, ignore,
 or generate a brief directly from a listing.
 

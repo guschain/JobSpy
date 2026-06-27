@@ -7,3 +7,6 @@ if (-not (Test-Path "workspace/cv.pdf") -and -not ($args -contains "--input")) {
   throw "Put your CV PDF at workspace/cv.pdf, or pass --input path\to\cv.pdf"
 }
 uv run job-finger cv --config workspace/config.json @args
+if (Test-Path "workspace/data/jobs.jsonl") {
+  uv run job-finger rescore --config workspace/config.json
+}
