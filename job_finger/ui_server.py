@@ -1431,15 +1431,93 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--blue);
       font-size: 11px;
     }
-    .quick-actions {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      margin-top: 8px;
+    .decision-panel {
+      border-top: 1px solid var(--line);
+      margin-top: 10px;
+      padding-top: 10px;
+      display: grid;
+      gap: 7px;
     }
-    .quick-actions button {
-      padding: 5px 8px;
+    .decision-label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .quick-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) minmax(0, .8fr);
+      gap: 7px;
+    }
+    .action-button {
+      border-radius: 8px;
+      padding: 8px 9px;
       font-size: 12px;
+      font-weight: 800;
+      min-height: 36px;
+      box-shadow: none;
+    }
+    .action-button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 7px 16px rgba(34, 34, 34, .10);
+    }
+    .action-button:disabled {
+      transform: none;
+      box-shadow: none;
+    }
+    .action-save {
+      border-color: #7dd3c7;
+      color: #0f766e;
+      background: #ecfdf9;
+    }
+    .action-brief {
+      border-color: var(--accent);
+      color: #fff;
+      background: var(--accent);
+    }
+    .action-ignore {
+      border-color: #d7d2cc;
+      color: #57534e;
+      background: #f7f5f2;
+    }
+    .action-button.active {
+      outline: 2px solid rgba(31, 41, 51, .16);
+      outline-offset: 2px;
+    }
+    .action-status {
+      min-height: 15px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .toast {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 10;
+      max-width: min(360px, calc(100vw - 36px));
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--text);
+      padding: 12px 14px;
+      box-shadow: 0 18px 40px rgba(34, 34, 34, .18);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .toast.good {
+      border-color: #7dd3c7;
+      color: var(--good);
+      background: #ecfdf9;
+    }
+    .toast.warn {
+      border-color: #fdba74;
+      color: var(--bad);
+      background: #fff7ed;
+    }
+    .toast.hidden {
+      display: none;
     }
     .match-grid {
       display: grid;
@@ -1838,6 +1916,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="empty">No job selected.</div>
     </section>
   </main>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script>
     const state = {
       jobs: [],
@@ -1848,6 +1927,7 @@ INDEX_HTML = r"""<!doctype html>
       profile: null,
       search: null,
       searchTimer: null,
+      toastTimer: null,
     };
     const $ = (id) => document.getElementById(id);
     const JOB_VISUALS = {
@@ -1884,6 +1964,24 @@ INDEX_HTML = r"""<!doctype html>
         terms: ["software", "engineer", "engenheiro", "developer", "programador", "backend", "frontend", "fullstack", "full stack", "devops", "sre", "platform", "cloud", "python", "react", "java", "node"],
       },
     ];
+    const ACTION_COPY = {
+      saved: {
+        working: "Shortlisting...",
+        done: "Added to shortlist",
+        tone: "good",
+      },
+      ignored: {
+        working: "Passing...",
+        done: "Marked as passed",
+        tone: "warn",
+      },
+      brief: {
+        working: "Building kit...",
+        done: "Application kit saved",
+        doneButton: "Kit ready",
+        tone: "good",
+      },
+    };
 
     function splitTerms(value) {
       return value.split(",").map(item => item.trim()).filter(Boolean);
@@ -2087,8 +2185,12 @@ INDEX_HTML = r"""<!doctype html>
         row.tabIndex = 0;
         row.onclick = () => selectJob(job.job_id);
         row.onkeydown = (event) => {
+          if (event.target !== row) return;
           if (event.key === "Enter" || event.key === " ") selectJob(job.job_id);
         };
+        const appStatus = String(job.status || job.application_status || "new").toLowerCase();
+        const isSaved = appStatus === "saved";
+        const isIgnored = appStatus === "ignored";
         const facts = [
           job.salary_label,
           formatWorkMode(job.work_mode),
@@ -2120,10 +2222,14 @@ INDEX_HTML = r"""<!doctype html>
               ${renderSkillPills(job.cv_matched_keywords || job.skills || [], 5)}
               ${(job.cv_missing_keywords || []).length ? `<span class="skill-pill">${escapeHtml(job.cv_missing_keywords.length)} gaps</span>` : ""}
             </div>
-            <div class="quick-actions">
-              <button data-action="saved" data-job-id="${escapeAttr(job.job_id)}">Save</button>
-              <button data-action="ignored" data-job-id="${escapeAttr(job.job_id)}">Ignore</button>
-              <button data-action="brief" data-job-id="${escapeAttr(job.job_id)}">Brief</button>
+            <div class="decision-panel">
+              <div class="decision-label">Next step</div>
+              <div class="quick-actions">
+                <button class="action-button action-save ${isSaved ? "active" : ""}" data-action="saved" data-job-id="${escapeAttr(job.job_id)}" title="Keep this role in your shortlist">${isSaved ? "Shortlisted" : "Shortlist"}</button>
+                <button class="action-button action-brief" data-action="brief" data-job-id="${escapeAttr(job.job_id)}" title="Create the local brief and cover letter draft">Build kit</button>
+                <button class="action-button action-ignore ${isIgnored ? "active" : ""}" data-action="ignored" data-job-id="${escapeAttr(job.job_id)}" title="Mark this role as passed">${isIgnored ? "Passed" : "Pass"}</button>
+              </div>
+              <div class="action-status" aria-live="polite"></div>
             </div>
           </div>`;
         row.querySelectorAll("[data-action]").forEach(button => {
@@ -2368,23 +2474,59 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    function showToast(message, tone = "good") {
+      const toast = $("toast");
+      if (!toast) return;
+      toast.textContent = message;
+      toast.className = `toast ${tone}`;
+      clearTimeout(state.toastTimer);
+      state.toastTimer = setTimeout(() => {
+        toast.className = "toast hidden";
+        toast.textContent = "";
+      }, 3200);
+    }
+
     async function quickAction(jobId, action, button) {
+      const copy = ACTION_COPY[action] || {
+        working: "Working...",
+        done: "Done",
+        tone: "good",
+      };
+      const panel = button.closest(".decision-panel");
+      const status = panel ? panel.querySelector(".action-status") : null;
+      const originalText = button.textContent;
       button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.textContent = copy.working;
+      if (status) status.textContent = copy.working;
       try {
         if (action === "brief") {
-          await api("/api/briefs", {
+          const payload = await api("/api/briefs", {
             method: "POST",
             body: JSON.stringify({ job_id: jobId }),
           });
+          const folder = payload.path ? "workspace/output" : "workspace";
+          if (status) status.textContent = `${copy.done} in ${folder}`;
+          button.textContent = copy.doneButton || copy.done;
+          showToast(`${copy.done} in ${folder}`, copy.tone);
+          return;
         } else {
           await api("/api/applications", {
             method: "POST",
             body: JSON.stringify({ job_id: jobId, status: action }),
           });
         }
+        if (status) status.textContent = copy.done;
+        showToast(copy.done, copy.tone);
         await loadJobs();
+      } catch (error) {
+        const message = error.message || "Action failed";
+        if (status) status.textContent = message;
+        showToast(message, "warn");
       } finally {
+        button.removeAttribute("aria-busy");
         button.disabled = false;
+        if (action !== "brief") button.textContent = originalText;
       }
     }
 
