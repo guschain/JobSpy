@@ -4,11 +4,18 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
-from job_finger.config import UserProfile, ensure_workspace_files, load_config
+from job_finger.config import (
+    JobFingerConfig,
+    SearchSpec,
+    UserProfile,
+    ensure_workspace_files,
+    load_config,
+)
 from job_finger.drafts import write_cover_letter
 from job_finger.matching import analyze_job_match, normalize_job_fields
-from job_finger.pipeline import RankedJob
+from job_finger.pipeline import RankedJob, run_searches
 from job_finger.resume import (
     analyze_resume_text,
     extract_resume_keywords,
@@ -289,6 +296,53 @@ class SearchTermTests(unittest.TestCase):
 
 
 class StorageTests(unittest.TestCase):
+    def test_run_searches_emits_progress_events(self) -> None:
+        class FakeFrame:
+            def to_dict(self, orient: str) -> list[dict]:
+                return [
+                    {
+                        "id": "progress-1",
+                        "title": "Backend Engineer",
+                        "company": "Example",
+                        "location": "Portugal",
+                        "description": "Python and FastAPI role.",
+                        "date_posted": "2026-06-26",
+                    }
+                ]
+
+        def fake_scrape_jobs(**kwargs) -> FakeFrame:
+            self.assertEqual(kwargs["location"], "Portugal")
+            return FakeFrame()
+
+        config = JobFingerConfig(
+            profile=UserProfile(resume_keywords=["python", "fastapi"]),
+            searches=[],
+        )
+        search = SearchSpec(
+            name="progress-search",
+            search_term="backend engineer",
+            location="Portugal",
+            site_name=["indeed"],
+            results_wanted=1,
+        )
+        events: list[dict] = []
+
+        with patch("job_finger.pipeline._load_scraper", return_value=fake_scrape_jobs):
+            results = run_searches(
+                config,
+                search_names=[],
+                search_specs=[search],
+                dry_run=True,
+                progress_callback=events.append,
+            )
+
+        self.assertEqual(results[0].total_scraped, 1)
+        self.assertEqual(results[0].ranked_jobs[0].job_id, "progress-1")
+        self.assertIn("scrape", [event["stage"] for event in events])
+        self.assertIn("scoring", [event["stage"] for event in events])
+        self.assertEqual(events[-1]["stage"], "complete")
+        self.assertEqual(events[-1]["percent"], 100)
+
     def test_workspace_files_use_data_and_single_output_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = ensure_workspace_files(Path(temp_dir) / "config.json")

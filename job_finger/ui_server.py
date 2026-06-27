@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import threading
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -53,6 +56,8 @@ class UIServerContext:
     config: JobFingerConfig
     config_path: Path
     data_path: Path
+    search_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    search_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def run_ui_server(
@@ -102,6 +107,10 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/profile":
             self._handle_profile()
             return
+        if parsed.path.startswith("/api/searches/"):
+            search_id = unquote(parsed.path.removeprefix("/api/searches/"))
+            self._handle_search_status(search_id)
+            return
         if parsed.path == "/api/preferences":
             self._send_json(
                 {
@@ -118,6 +127,12 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/search":
             try:
                 self._handle_search(self._read_json_body())
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            return
+        if parsed.path == "/api/search/start":
+            try:
+                self._handle_search_start(self._read_json_body())
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return
@@ -289,6 +304,53 @@ class JobFingerUIHandler(BaseHTTPRequestHandler):
                 "jobs": [_ranked_row(item) for item in result.ranked_jobs[:100]],
             }
         )
+
+    def _handle_search_start(self, payload: dict[str, Any]) -> None:
+        config = self._refresh_config()
+        search_spec = build_search_spec(payload, config)
+        search_id = str(uuid.uuid4())
+        _set_search_record(
+            self.server_context,
+            search_id,
+            {
+                "search_id": search_id,
+                "status": "queued",
+                "stage": "queued",
+                "message": "Queued search",
+                "percent": 0,
+                "created_at": _utc_now(),
+                "updated_at": _utc_now(),
+                "events": [
+                    {
+                        "stage": "queued",
+                        "message": "Queued search",
+                        "percent": 0,
+                        "updated_at": _utc_now(),
+                    }
+                ],
+                "payload": {
+                    "keywords": payload.get("keywords") or payload.get("keyword") or [],
+                    "related_to": payload.get("related_to") or [],
+                    "location": search_spec.location,
+                    "sites": search_spec.site_name,
+                    "results": search_spec.results_wanted,
+                },
+            },
+        )
+        thread = threading.Thread(
+            target=_run_background_search,
+            args=(self.server_context, search_id, config, search_spec),
+            daemon=True,
+        )
+        thread.start()
+        self._send_json(_get_search_record(self.server_context, search_id), status=202)
+
+    def _handle_search_status(self, search_id: str) -> None:
+        record = _get_search_record(self.server_context, search_id)
+        if record is None:
+            self._send_json({"error": f"No search found with id {search_id}"}, status=404)
+            return
+        self._send_json(record)
 
     def _handle_application_update(self, payload: dict[str, Any]) -> None:
         job_id = str(payload.get("job_id") or "").strip()
@@ -504,6 +566,140 @@ def profile_status(
     }
 
 
+def _run_background_search(
+    context: UIServerContext,
+    search_id: str,
+    config: JobFingerConfig,
+    search_spec: SearchSpec,
+) -> None:
+    _update_search_record(
+        context,
+        search_id,
+        status="running",
+        stage="starting",
+        message="Starting job board search",
+        percent=2,
+    )
+    try:
+        results = run_searches(
+            config,
+            search_names=[],
+            search_specs=[search_spec],
+            lake_path=context.data_path,
+            progress_callback=lambda event: _update_search_record(
+                context,
+                search_id,
+                status="running",
+                **event,
+            ),
+        )
+        result = results[0]
+        _update_search_record(
+            context,
+            search_id,
+            status="complete",
+            stage="complete",
+            message=(
+                f"Done: scraped {result.total_scraped}, "
+                f"stored {result.total_stored}"
+            ),
+            percent=100,
+            result={
+                "run_id": result.run_id,
+                "search_name": result.search_name,
+                "total_scraped": result.total_scraped,
+                "total_stored": result.total_stored,
+                "jobs": [_ranked_row(item) for item in result.ranked_jobs[:100]],
+            },
+        )
+    except Exception as exc:  # UI surface needs the failure instead of silence.
+        _update_search_record(
+            context,
+            search_id,
+            status="error",
+            stage="error",
+            message=str(exc),
+            percent=100,
+            error=str(exc),
+        )
+
+
+def _set_search_record(
+    context: UIServerContext, search_id: str, record: dict[str, Any]
+) -> None:
+    with context.search_lock:
+        context.search_jobs[search_id] = record
+        _trim_search_jobs(context.search_jobs)
+
+
+def _get_search_record(
+    context: UIServerContext, search_id: str
+) -> dict[str, Any] | None:
+    with context.search_lock:
+        record = context.search_jobs.get(search_id)
+        if record is None:
+            return None
+        return json.loads(json.dumps(record))
+
+
+def _update_search_record(
+    context: UIServerContext,
+    search_id: str,
+    **updates: Any,
+) -> None:
+    with context.search_lock:
+        record = context.search_jobs.setdefault(
+            search_id,
+            {
+                "search_id": search_id,
+                "status": "running",
+                "events": [],
+                "created_at": _utc_now(),
+            },
+        )
+        event = {
+            "stage": updates.get("stage", record.get("stage", "running")),
+            "message": updates.get("message", record.get("message", "")),
+            "percent": updates.get("percent", record.get("percent", 0)),
+            "updated_at": _utc_now(),
+        }
+        event.update(
+            {
+                key: value
+                for key, value in updates.items()
+                if key
+                not in {
+                    "status",
+                    "result",
+                    "error",
+                }
+            }
+        )
+        events = [*(record.get("events") or []), event]
+        record.update(updates)
+        record["updated_at"] = event["updated_at"]
+        record["events"] = events[-30:]
+        _trim_search_jobs(context.search_jobs)
+
+
+def _trim_search_jobs(search_jobs: dict[str, dict[str, Any]], limit: int = 20) -> None:
+    if len(search_jobs) <= limit:
+        return
+    ordered = sorted(
+        search_jobs.items(),
+        key=lambda item: str(item[1].get("updated_at") or ""),
+        reverse=True,
+    )
+    keep = {search_id for search_id, _ in ordered[:limit]}
+    for search_id in list(search_jobs):
+        if search_id not in keep:
+            search_jobs.pop(search_id, None)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 def _list_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "job_id": row.get("job_id"),
@@ -703,19 +899,22 @@ INDEX_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Job Finger</title>
+  <title>RelevantFinder</title>
   <style>
     :root {
-      --bg: #f6f7f9;
+      --bg: #f7f6f3;
       --panel: #ffffff;
-      --line: #d8dde6;
-      --text: #1c2430;
-      --muted: #667084;
-      --accent: #136f63;
-      --accent-dark: #0d4d45;
+      --soft: #fbfaf8;
+      --line: #e4e0d9;
+      --text: #222222;
+      --muted: #717171;
+      --accent: #b84f43;
+      --accent-dark: #7f342c;
+      --ink: #1f2933;
+      --blue: #256f85;
       --warn: #9f580a;
       --bad: #9a3412;
-      --good: #0f766e;
+      --good: #13795b;
     }
     * { box-sizing: border-box; }
     body {
@@ -727,16 +926,47 @@ INDEX_HTML = r"""<!doctype html>
     }
     header {
       display: grid;
-      gap: 10px;
-      padding: 14px 18px;
+      gap: 14px;
+      padding: 18px 28px 16px;
       border-bottom: 1px solid var(--line);
       background: var(--panel);
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      box-shadow: 0 1px 0 rgba(34, 34, 34, .04);
     }
     h1 {
       margin: 0;
-      font-size: 18px;
+      font-size: 21px;
       line-height: 1.2;
       font-weight: 700;
+    }
+    .brand-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background: var(--accent);
+      font-weight: 800;
+    }
+    .brand-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
     }
     label {
       display: grid;
@@ -752,8 +982,8 @@ INDEX_HTML = r"""<!doctype html>
     input, select, textarea {
       width: 100%;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 8px 9px;
+      border-radius: 10px;
+      padding: 9px 10px;
       background: #fff;
       color: var(--text);
       min-width: 0;
@@ -766,8 +996,8 @@ INDEX_HTML = r"""<!doctype html>
       border: 1px solid var(--line);
       background: #fff;
       color: var(--text);
-      border-radius: 6px;
-      padding: 8px 11px;
+      border-radius: 999px;
+      padding: 9px 13px;
       cursor: pointer;
       white-space: nowrap;
     }
@@ -783,9 +1013,81 @@ INDEX_HTML = r"""<!doctype html>
     }
     .toolbar {
       display: grid;
-      grid-template-columns: minmax(180px, 1.2fr) minmax(150px, .8fr) 120px 90px 120px auto auto;
-      gap: 10px;
-      align-items: end;
+      grid-template-columns: minmax(180px, 1.15fr) minmax(150px, .85fr) 128px 96px 128px auto;
+      gap: 0;
+      align-items: stretch;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      box-shadow: 0 8px 22px rgba(34, 34, 34, .09);
+      overflow: hidden;
+      max-width: 1120px;
+    }
+    .toolbar label {
+      padding: 9px 14px;
+      border-right: 1px solid var(--line);
+    }
+    .toolbar input, .toolbar select {
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
+      min-height: 22px;
+    }
+    .toolbar button {
+      margin: 7px;
+      align-self: center;
+    }
+    .search-progress {
+      display: grid;
+      gap: 9px;
+      border: 1px solid #ecd7d2;
+      border-radius: 14px;
+      background: #fff8f6;
+      padding: 12px 14px;
+      max-width: 1120px;
+    }
+    .search-progress.hidden { display: none; }
+    .progress-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+    .progress-title {
+      font-weight: 700;
+      line-height: 1.25;
+    }
+    .progress-track {
+      width: 100%;
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #eaded8;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+      transition: width .25s ease;
+    }
+    .progress-steps {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+    .progress-step {
+      border: 1px solid #eaded8;
+      background: #fff;
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+    .progress-step.active {
+      border-color: var(--accent);
+      color: var(--accent-dark);
+      font-weight: 700;
     }
     .cv-panel {
       display: grid;
@@ -793,10 +1095,11 @@ INDEX_HTML = r"""<!doctype html>
       gap: 12px;
       align-items: center;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #f8fafc;
+      border-radius: 14px;
+      background: var(--soft);
       padding: 10px 12px;
       min-width: 0;
+      max-width: 1120px;
     }
     .cv-title {
       font-weight: 700;
@@ -827,43 +1130,64 @@ INDEX_HTML = r"""<!doctype html>
     }
     main {
       display: grid;
-      grid-template-columns: minmax(380px, 42%) minmax(420px, 1fr);
-      min-height: calc(100vh - 172px);
+      grid-template-columns: minmax(420px, 45%) minmax(460px, 1fr);
+      min-height: calc(100vh - 214px);
     }
     aside {
       border-right: 1px solid var(--line);
-      background: var(--panel);
+      background: var(--bg);
       min-width: 0;
+    }
+    .results-head {
+      padding: 18px 18px 8px;
+      display: grid;
+      gap: 4px;
+    }
+    .results-title {
+      font-size: 18px;
+      font-weight: 750;
+      line-height: 1.25;
     }
     .filters {
       display: grid;
-      grid-template-columns: minmax(150px, 1fr) 110px 88px 112px;
+      grid-template-columns: minmax(150px, 1fr) 104px 108px;
       gap: 8px;
-      padding: 12px;
-      border-bottom: 1px solid var(--line);
+      padding: 10px 18px;
       align-items: end;
     }
+    .filter-panel {
+      margin: 0 18px 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .filter-panel summary {
+      cursor: pointer;
+      padding: 12px 14px;
+      font-weight: 700;
+      list-style: none;
+    }
+    .filter-panel summary::-webkit-details-marker { display: none; }
     .exclude-filters {
       display: grid;
       grid-template-columns: minmax(160px, 1fr) 105px 100px 100px 100px;
       gap: 8px;
-      padding: 0 12px 12px;
-      border-bottom: 1px solid var(--line);
+      padding: 0 14px 14px;
       align-items: end;
     }
     .summary-strip {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--line);
-      background: #f8fafc;
+      padding: 0 18px 12px;
+      background: transparent;
     }
     .summary-item {
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 12px;
       background: #fff;
-      padding: 8px;
+      padding: 10px;
       min-width: 0;
     }
     .summary-value {
@@ -879,26 +1203,73 @@ INDEX_HTML = r"""<!doctype html>
     }
     .job-list {
       overflow: auto;
-      max-height: calc(100vh - 248px);
+      max-height: calc(100vh - 344px);
       display: grid;
-      gap: 10px;
-      padding: 10px;
+      gap: 14px;
+      padding: 0 18px 18px;
     }
     .job-row {
       width: 100%;
       display: grid;
-      grid-template-columns: 52px 1fr;
-      gap: 10px;
-      padding: 12px;
+      grid-template-columns: 112px 1fr;
+      gap: 14px;
+      padding: 0;
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 16px;
       text-align: left;
       background: #fff;
-      box-shadow: 0 1px 2px rgba(18, 25, 38, .06);
+      box-shadow: 0 1px 2px rgba(18, 25, 38, .04);
+      overflow: hidden;
     }
     .job-row:hover, .job-row.active {
-      background: #eef7f5;
-      border-color: #9bc9c1;
+      border-color: #cfada4;
+      box-shadow: 0 9px 24px rgba(34, 34, 34, .10);
+    }
+    .card-visual {
+      min-height: 144px;
+      padding: 12px;
+      display: grid;
+      align-content: space-between;
+      background:
+        linear-gradient(135deg, rgba(184,79,67,.16), rgba(37,111,133,.14)),
+        #f1eee9;
+    }
+    .company-initials {
+      width: 46px;
+      height: 46px;
+      border-radius: 12px;
+      background: #fff;
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      font-weight: 800;
+      box-shadow: 0 1px 8px rgba(34, 34, 34, .08);
+    }
+    .score-badge {
+      justify-self: start;
+      border-radius: 999px;
+      padding: 5px 8px;
+      color: #fff;
+      background: var(--ink);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .card-body {
+      display: grid;
+      gap: 7px;
+      padding: 14px 14px 12px 0;
+      min-width: 0;
+    }
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+    }
+    .card-facts {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.35;
     }
     .score {
       display: grid;
@@ -914,9 +1285,8 @@ INDEX_HTML = r"""<!doctype html>
     }
     .job-title {
       font-weight: 700;
-      font-size: 14px;
+      font-size: 15px;
       line-height: 1.25;
-      margin-bottom: 4px;
     }
     .meta, .small {
       color: var(--muted);
@@ -932,7 +1302,7 @@ INDEX_HTML = r"""<!doctype html>
     .pill {
       border: 1px solid var(--line);
       border-radius: 999px;
-      padding: 2px 7px;
+      padding: 4px 8px;
       background: #fff;
       color: var(--muted);
       font-size: 12px;
@@ -944,10 +1314,10 @@ INDEX_HTML = r"""<!doctype html>
       margin-top: 8px;
     }
     .skill-pill {
-      border-radius: 6px;
-      padding: 2px 6px;
-      background: #eef2f7;
-      color: #364152;
+      border-radius: 999px;
+      padding: 3px 7px;
+      background: #eef6f7;
+      color: var(--blue);
       font-size: 11px;
     }
     .quick-actions {
@@ -968,7 +1338,7 @@ INDEX_HTML = r"""<!doctype html>
     }
     .match-panel {
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 14px;
       background: #fff;
       padding: 12px;
       min-width: 0;
@@ -999,17 +1369,37 @@ INDEX_HTML = r"""<!doctype html>
     section.detail {
       min-width: 0;
       overflow: auto;
-      max-height: calc(100vh - 172px);
+      max-height: calc(100vh - 214px);
+      background: #fff;
     }
     .detail-head {
-      padding: 18px;
+      padding: 22px 24px 18px;
       border-bottom: 1px solid var(--line);
       background: #fff;
     }
     .detail-title {
       margin: 0 0 6px;
-      font-size: 22px;
+      font-size: 26px;
       line-height: 1.2;
+    }
+    .detail-story {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 128px;
+      gap: 18px;
+      align-items: start;
+    }
+    .detail-score {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      text-align: center;
+      box-shadow: 0 8px 18px rgba(34, 34, 34, .08);
+    }
+    .detail-score-value {
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 800;
+      color: var(--accent-dark);
     }
     .links {
       display: flex;
@@ -1029,7 +1419,7 @@ INDEX_HTML = r"""<!doctype html>
     .tabs {
       display: flex;
       gap: 8px;
-      padding: 12px 18px 0;
+      padding: 14px 24px 0;
       background: #fff;
     }
     .tabs button.active {
@@ -1038,7 +1428,7 @@ INDEX_HTML = r"""<!doctype html>
       font-weight: 700;
     }
     .pane {
-      padding: 18px;
+      padding: 18px 24px;
       display: none;
     }
     .pane.active { display: block; }
@@ -1048,8 +1438,24 @@ INDEX_HTML = r"""<!doctype html>
       font-size: 14px;
       background: #fff;
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 14px;
       padding: 14px;
+    }
+    .highlight-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .highlight {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      background: var(--soft);
+    }
+    .highlight strong {
+      display: block;
+      margin-bottom: 4px;
     }
     pre {
       white-space: pre-wrap;
@@ -1087,7 +1493,13 @@ INDEX_HTML = r"""<!doctype html>
       .toolbar, .cv-panel, main, .filters, .exclude-filters, .summary-strip, .form-grid {
         grid-template-columns: 1fr;
       }
+      .toolbar { border-radius: 18px; }
+      .toolbar label { border-right: 0; border-bottom: 1px solid var(--line); }
       .cv-actions { justify-content: start; }
+      .detail-story, .highlight-row, .job-row {
+        grid-template-columns: 1fr;
+      }
+      .card-body { padding: 0 14px 14px; }
       section.detail, .job-list {
         max-height: none;
       }
@@ -1096,12 +1508,21 @@ INDEX_HTML = r"""<!doctype html>
 </head>
 <body>
   <header>
-    <h1>Job Finger</h1>
+    <div class="brand-row">
+      <div class="brand">
+        <div class="brand-mark">RF</div>
+        <div>
+          <h1>RelevantFinder</h1>
+          <div class="brand-subtitle">Find, rank, and track Portugal-ready roles.</div>
+        </div>
+      </div>
+      <button id="refresh">Refresh</button>
+    </div>
     <div class="toolbar">
-      <label>Keywords <input id="searchKeywords" placeholder="python, fastapi"></label>
-      <label>Related <input id="searchRelated" placeholder="backend, ai"></label>
-      <label>Location <input id="searchLocation" value="Portugal"></label>
-      <label>Results <input id="searchResults" type="number" min="1" max="500" value="50"></label>
+      <label>What <input id="searchKeywords" placeholder="python, fastapi"></label>
+      <label>Related to <input id="searchRelated" placeholder="backend, ai"></label>
+      <label>Where <input id="searchLocation" value="Portugal"></label>
+      <label>How many <input id="searchResults" type="number" min="1" max="500" value="50"></label>
       <label>Site
         <select id="searchSite">
           <option value="indeed,linkedin">Indeed + LinkedIn</option>
@@ -1110,15 +1531,19 @@ INDEX_HTML = r"""<!doctype html>
           <option value="google">Google</option>
         </select>
       </label>
-      <button class="primary" id="runSearch">Search Boards</button>
-      <button id="refresh">Refresh</button>
+      <button class="primary" id="runSearch">Search</button>
     </div>
+    <div id="searchProgress" class="search-progress hidden"></div>
     <div id="cvPanel" class="cv-panel"></div>
   </header>
   <main>
     <aside>
+      <div class="results-head">
+        <div class="results-title">Best matches</div>
+        <div class="small">Ranked by fit, freshness, salary, work mode, and CV evidence.</div>
+      </div>
       <div class="filters">
-        <label>Local Search <input id="localQuery" placeholder="company, skill, title"></label>
+        <label>Search saved jobs <input id="localQuery" placeholder="company, skill, title"></label>
         <label>Status
           <select id="statusFilter">
             <option value="">Any</option>
@@ -1132,7 +1557,6 @@ INDEX_HTML = r"""<!doctype html>
             <option value="ignored">Ignored</option>
           </select>
         </label>
-        <label>Min Score <input id="minScore" type="number" min="0" max="100" value="0"></label>
         <label>Sort
           <select id="sortBy">
             <option value="score">Best match</option>
@@ -1141,66 +1565,70 @@ INDEX_HTML = r"""<!doctype html>
             <option value="company">Company</option>
           </select>
         </label>
-        <label>Skills <input id="skillKeywords" placeholder="python, react"></label>
       </div>
-      <div class="exclude-filters">
-        <label>Exclude Keywords <input id="excludeKeywords" placeholder="senior, sap, recruiter"></label>
-        <label>Exclude In
-          <select id="excludeScope">
-            <option value="all">All text</option>
-            <option value="title">Title</option>
-            <option value="content">Content</option>
-          </select>
-        </label>
-        <label>Mode
-          <select id="workMode">
-            <option value="">Any</option>
-            <option value="remote">Remote</option>
-            <option value="hybrid">Hybrid</option>
-            <option value="office">Office</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </label>
-        <label>Schedule
-          <select id="workSchedule">
-            <option value="">Any</option>
-            <option value="full_time">Full-time</option>
-            <option value="part_time">Part-time</option>
-            <option value="flexible">Flexible</option>
-            <option value="shift">Shift</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </label>
-        <label>Seniority
-          <select id="seniorityFilter">
-            <option value="">Any</option>
-            <option value="intern">Intern</option>
-            <option value="junior">Junior</option>
-            <option value="mid">Mid</option>
-            <option value="senior">Senior</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </label>
-        <label>Min Salary <input id="minSalary" type="number" min="0" step="1000"></label>
-      </div>
-      <div class="exclude-filters">
-        <label>Published From <input id="publishedFrom" type="date"></label>
-        <label>Published To <input id="publishedTo" type="date"></label>
-        <label>Recommendation
-          <select id="recommendationFilter">
-            <option value="">Any</option>
-            <option value="priority">Priority</option>
-            <option value="strong">Strong</option>
-            <option value="review">Review</option>
-            <option value="low">Low</option>
-          </select>
-        </label>
-        <label>Min CV Matches <input id="minCvMatches" type="number" min="0" max="20"></label>
-        <label>Max Gaps <input id="maxCvGaps" type="number" min="0" max="30"></label>
-      </div>
-      <div class="exclude-filters">
-        <label>No Negative <input id="noNegative" type="checkbox"></label>
-      </div>
+      <details class="filter-panel">
+        <summary>Filters</summary>
+        <div class="exclude-filters">
+          <label>Skills <input id="skillKeywords" placeholder="python, react"></label>
+          <label>Min Score <input id="minScore" type="number" min="0" max="100" value="0"></label>
+          <label>Mode
+            <select id="workMode">
+              <option value="">Any</option>
+              <option value="remote">Remote</option>
+              <option value="hybrid">Hybrid</option>
+              <option value="office">Office</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </label>
+          <label>Schedule
+            <select id="workSchedule">
+              <option value="">Any</option>
+              <option value="full_time">Full-time</option>
+              <option value="part_time">Part-time</option>
+              <option value="flexible">Flexible</option>
+              <option value="shift">Shift</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </label>
+          <label>Seniority
+            <select id="seniorityFilter">
+              <option value="">Any</option>
+              <option value="intern">Intern</option>
+              <option value="junior">Junior</option>
+              <option value="mid">Mid</option>
+              <option value="senior">Senior</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </label>
+        </div>
+        <div class="exclude-filters">
+          <label>Min Salary <input id="minSalary" type="number" min="0" step="1000"></label>
+          <label>Published From <input id="publishedFrom" type="date"></label>
+          <label>Published To <input id="publishedTo" type="date"></label>
+          <label>Recommendation
+            <select id="recommendationFilter">
+              <option value="">Any</option>
+              <option value="priority">Priority</option>
+              <option value="strong">Strong</option>
+              <option value="review">Review</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+          <label>No Negative <input id="noNegative" type="checkbox"></label>
+        </div>
+        <div class="exclude-filters">
+          <label>Exclude Keywords <input id="excludeKeywords" placeholder="senior, sap, recruiter"></label>
+          <label>Exclude In
+            <select id="excludeScope">
+              <option value="all">All text</option>
+              <option value="title">Title</option>
+              <option value="content">Content</option>
+            </select>
+          </label>
+          <label>Min CV Matches <input id="minCvMatches" type="number" min="0" max="20"></label>
+          <label>Max Gaps <input id="maxCvGaps" type="number" min="0" max="30"></label>
+        </div>
+      </details>
       <div id="summaryStrip" class="summary-strip"></div>
       <div id="jobList" class="job-list"></div>
     </aside>
@@ -1209,7 +1637,16 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
   <script>
-    const state = { jobs: [], selectedId: null, detail: null, activeTab: "post", summary: null, profile: null };
+    const state = {
+      jobs: [],
+      selectedId: null,
+      detail: null,
+      activeTab: "post",
+      summary: null,
+      profile: null,
+      search: null,
+      searchTimer: null,
+    };
     const $ = (id) => document.getElementById(id);
 
     function splitTerms(value) {
@@ -1371,16 +1808,10 @@ INDEX_HTML = r"""<!doctype html>
       const strip = $("summaryStrip");
       const summary = state.summary || {};
       const items = [
-        [`${summary.total || 0}`, "Listings"],
-        [`${summary.priority || 0}/${summary.strong || 0}`, "Priority / Strong"],
-        [`${summary.with_cv_matches || 0}`, "With CV Match"],
-        [`${summary.with_cv_evidence || 0}`, "With CV Evidence"],
-        [`${summary.with_gaps || 0}`, "With Gaps"],
-        [`${summary.with_salary || 0}`, "With Salary"],
-        [`${summary.remote || 0}/${summary.hybrid || 0}`, "Remote / Hybrid"],
-        [`${summary.full_time || 0}/${summary.part_time || 0}`, "Full / Part Time"],
-        [`${summary.with_negative || 0}`, "Negative Signals"],
-        [`${summary.average_score || 0}`, "Avg Score"],
+        [`${summary.total || 0}`, "listings"],
+        [`${summary.priority || 0}/${summary.strong || 0}`, "priority / strong"],
+        [`${summary.remote || 0}/${summary.hybrid || 0}`, "remote / hybrid"],
+        [`${summary.with_salary || 0}/${summary.with_cv_evidence || 0}`, "salary / CV proof"],
       ];
       strip.innerHTML = items.map(([value, label]) => `
         <div class="summary-item">
@@ -1405,22 +1836,29 @@ INDEX_HTML = r"""<!doctype html>
         row.onkeydown = (event) => {
           if (event.key === "Enter" || event.key === " ") selectJob(job.job_id);
         };
+        const facts = [
+          job.salary_label,
+          formatWorkMode(job.work_mode),
+          showSchedule(job) ? formatSchedule(job.work_schedule) : "",
+          job.published_at ? `Published ${job.published_at}` : "",
+        ].filter(Boolean).join(" · ");
         row.innerHTML = `
-          <div class="score">${Math.round(job.score || 0)}</div>
-          <div>
-            <div class="job-title">${escapeHtml(job.title || "Untitled")}</div>
-            <div class="meta">${escapeHtml(job.company || "")} - ${escapeHtml(job.location || "")}</div>
+          <div class="card-visual">
+            <div class="company-initials">${escapeHtml(initials(job.company || job.title || "RF"))}</div>
+            <div class="score-badge">${Math.round(job.score || 0)} match</div>
+          </div>
+          <div class="card-body">
+            <div class="card-top">
+              <div class="job-title">${escapeHtml(job.title || "Untitled")}</div>
+              ${job.recommendation ? `<span class="pill good">${escapeHtml(job.recommendation)}</span>` : ""}
+            </div>
+            <div class="meta">${escapeHtml([job.company, job.location].filter(Boolean).join(" · ") || "Company not shown")}</div>
+            <div class="card-facts">${escapeHtml(facts || "Salary and work setup not captured yet")}</div>
             <div class="status-line">
               <span class="pill">${escapeHtml(job.status || "new")}</span>
               <span class="pill">${escapeHtml(job.site || "")}</span>
-              ${job.salary_label ? `<span class="pill">${escapeHtml(job.salary_label)}</span>` : ""}
-              ${job.work_mode ? `<span class="pill">${escapeHtml(job.work_mode)}</span>` : ""}
-              ${showSchedule(job) ? `<span class="pill">${escapeHtml(formatSchedule(job.work_schedule))}</span>` : ""}
-              ${job.work_hours_label ? `<span class="pill">${escapeHtml(job.work_hours_label)}</span>` : ""}
               ${job.seniority ? `<span class="pill">${escapeHtml(job.seniority)}</span>` : ""}
               ${showCvStrength(job) ? `<span class="pill">CV ${escapeHtml(job.cv_match_strength)}</span>` : ""}
-              ${job.job_type ? `<span class="pill">${escapeHtml(job.job_type)}</span>` : ""}
-              ${job.published_at ? `<span class="pill">Published ${escapeHtml(job.published_at)}</span>` : ""}
               ${job.last_applied_at ? `<span class="pill">Applied ${escapeHtml(formatDate(job.last_applied_at))}</span>` : ""}
             </div>
             <div class="skill-line">
@@ -1458,20 +1896,28 @@ INDEX_HTML = r"""<!doctype html>
       const description = raw.description || job.description || "";
       $("detail").innerHTML = `
         <div class="detail-head">
-          <h2 class="detail-title">${escapeHtml(job.title || "Untitled")}</h2>
-          <div class="meta">${escapeHtml(job.company || "")} - ${escapeHtml(job.location || "")} - Score ${escapeHtml(job.score ?? "")}</div>
-          <div class="status-line">
-            <span class="pill">${escapeHtml(job.application_status || "new")}</span>
-            ${job.date_posted ? `<span class="pill">Published ${escapeHtml(job.date_posted)}</span>` : ""}
-            ${salaryLabel(job) ? `<span class="pill">${escapeHtml(salaryLabel(job))}</span>` : ""}
-            ${job.work_mode ? `<span class="pill">${escapeHtml(job.work_mode)}</span>` : ""}
-            ${showSchedule(job) ? `<span class="pill">${escapeHtml(formatSchedule(job.work_schedule))}</span>` : ""}
-            ${job.work_hours_label ? `<span class="pill">${escapeHtml(job.work_hours_label)}</span>` : ""}
-            ${job.seniority ? `<span class="pill">${escapeHtml(job.seniority)}</span>` : ""}
-            ${showCvStrength(job) ? `<span class="pill">CV ${escapeHtml(job.cv_match_strength)}</span>` : ""}
-            ${job.job_type ? `<span class="pill">${escapeHtml(job.job_type)}</span>` : ""}
-            ${payload.last_applied_at ? `<span class="pill">Last applied ${escapeHtml(formatDate(payload.last_applied_at))}</span>` : ""}
-            ${job.next_action_at ? `<span class="pill">Next ${escapeHtml(job.next_action_at)}</span>` : ""}
+          <div class="detail-story">
+            <div>
+              <h2 class="detail-title">${escapeHtml(job.title || "Untitled")}</h2>
+              <div class="meta">${escapeHtml([job.company, job.location].filter(Boolean).join(" · ") || "Company not shown")}</div>
+              <div class="status-line">
+                <span class="pill">${escapeHtml(job.application_status || "new")}</span>
+                ${job.date_posted ? `<span class="pill">Published ${escapeHtml(job.date_posted)}</span>` : ""}
+                ${salaryLabel(job) ? `<span class="pill">${escapeHtml(salaryLabel(job))}</span>` : ""}
+                ${job.work_mode ? `<span class="pill">${escapeHtml(formatWorkMode(job.work_mode))}</span>` : ""}
+                ${showSchedule(job) ? `<span class="pill">${escapeHtml(formatSchedule(job.work_schedule))}</span>` : ""}
+                ${job.work_hours_label ? `<span class="pill">${escapeHtml(job.work_hours_label)}</span>` : ""}
+                ${job.seniority ? `<span class="pill">${escapeHtml(job.seniority)}</span>` : ""}
+                ${showCvStrength(job) ? `<span class="pill">CV ${escapeHtml(job.cv_match_strength)}</span>` : ""}
+                ${payload.last_applied_at ? `<span class="pill">Last applied ${escapeHtml(formatDate(payload.last_applied_at))}</span>` : ""}
+                ${job.next_action_at ? `<span class="pill">Next ${escapeHtml(job.next_action_at)}</span>` : ""}
+              </div>
+            </div>
+            <div class="detail-score">
+              <div class="detail-score-value">${escapeHtml(Math.round(Number(job.score || 0)))}</div>
+              <div class="small">match score</div>
+              ${job.recommendation ? `<div class="pill good">${escapeHtml(job.recommendation)}</div>` : ""}
+            </div>
           </div>
           <div class="links">
             ${job.job_url ? `<a href="${escapeAttr(job.job_url)}" target="_blank" rel="noreferrer">Job Post</a>` : ""}
@@ -1479,12 +1925,13 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
         <div class="tabs">
-          ${tabButton("post", "Post")}
+          ${tabButton("post", "Overview")}
           ${tabButton("match", "Match")}
-          ${tabButton("application", "Application")}
-          ${tabButton("data", "All Data")}
+          ${tabButton("application", "Apply")}
+          ${tabButton("data", "Data")}
         </div>
         <div id="pane-post" class="pane ${state.activeTab === "post" ? "active" : ""}">
+          ${detailHighlights(job)}
           <div class="description">${escapeHtml(description || "No description captured.")}</div>
         </div>
         <div id="pane-match" class="pane ${state.activeTab === "match" ? "active" : ""}">
@@ -1519,35 +1966,42 @@ INDEX_HTML = r"""<!doctype html>
       return `<button data-tab="${id}" class="${state.activeTab === id ? "active" : ""}">${label}</button>`;
     }
 
+    function detailHighlights(job) {
+      const highlights = [
+        ["Work setup", [formatWorkMode(job.work_mode), showSchedule(job) ? formatSchedule(job.work_schedule) : "", job.work_hours_label].filter(Boolean).join(" · ") || "Not captured yet"],
+        ["Compensation", salaryLabel(job) || "Not shown"],
+        ["Best evidence", (job.cv_matched_keywords || [])[0] || (job.skills || [])[0] || "No CV signal yet"],
+      ];
+      return `<div class="highlight-row">${highlights.map(([label, value]) => `
+        <div class="highlight">
+          <strong>${escapeHtml(label)}</strong>
+          <div class="small">${escapeHtml(value)}</div>
+        </div>`).join("")}</div>`;
+    }
+
     function matchPane(job) {
       return `
         <div class="match-grid">
           <div class="match-panel">
-            <h3>CV Matches</h3>
-            ${listItems(job.cv_matched_keywords || [], "No direct CV matches captured.")}
+            <h3>Fit Signals</h3>
+            ${listItems(job.match_explanation || job.reasons || [], "No explanation recorded.")}
           </div>
           <div class="match-panel">
-            <h3>CV Evidence</h3>
+            <h3>CV Proof</h3>
+            ${listItems(job.cv_matched_keywords || [], "No direct CV matches captured.")}
             ${evidenceItems(job.cv_evidence || [], "No CV evidence snippets captured.")}
           </div>
           <div class="match-panel">
-            <h3>Potential Gaps</h3>
+            <h3>Watchouts</h3>
             ${listItems(job.cv_missing_keywords || [], "No CV gaps captured.")}
           </div>
           <div class="match-panel">
-            <h3>Skills Detected</h3>
+            <h3>Skills In Post</h3>
             ${listItems(job.skills || [], "No skills detected.")}
           </div>
-          <div class="match-panel">
-            <h3>Application Suggestions</h3>
+          <div class="match-panel wide">
+            <h3>Application Kit</h3>
             ${listItems(job.application_suggestions || [], "No suggestions recorded.")}
-          </div>
-          <div class="match-panel wide">
-            <h3>Why This Match</h3>
-            ${listItems(job.match_explanation || job.reasons || [], "No explanation recorded.")}
-          </div>
-          <div class="match-panel wide">
-            <h3>Cover Letter Draft</h3>
             <div class="cover-draft">${escapeHtml(job.cover_letter_draft || "No cover letter draft recorded.")}</div>
             <div class="links">
               <button class="primary" id="saveBrief">Save Brief</button>
@@ -1555,7 +2009,7 @@ INDEX_HTML = r"""<!doctype html>
             </div>
           </div>
           <div class="match-panel wide">
-            <h3>Learn From This Rejection</h3>
+            <h3>Teach The Recommender</h3>
             <div class="form-grid">
               <label class="wide">Negative Terms
                 <input id="feedbackTerms" placeholder="sap, cold calling, unpaid">
@@ -1677,6 +2131,65 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    function renderSearchProgress(record) {
+      const panel = $("searchProgress");
+      if (!record) {
+        panel.classList.add("hidden");
+        panel.innerHTML = "";
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Number(record.percent || 0)));
+      const statusLabel = record.status === "error"
+        ? "Search failed"
+        : (record.status === "complete" ? "Search complete" : "Search running");
+      const events = (record.events || []).slice(-6);
+      const steps = [
+        ["prepare", "Prepare"],
+        ["scrape", "Boards"],
+        ["scraped", "Received"],
+        ["scoring", "Score"],
+        ["saving", "Save"],
+        ["complete", "Done"],
+      ];
+      panel.classList.remove("hidden");
+      panel.innerHTML = `
+        <div class="progress-head">
+          <div>
+            <div class="progress-title">${escapeHtml(statusLabel)}</div>
+            <div class="small">${escapeHtml(record.message || "Working")}</div>
+          </div>
+          <div class="small">${escapeHtml(Math.round(percent))}%</div>
+        </div>
+        <div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div>
+        <div class="progress-steps">
+          ${steps.map(([stage, label]) => `<span class="progress-step ${isProgressStageActive(stage, record.stage) ? "active" : ""}">${escapeHtml(label)}</span>`).join("")}
+        </div>
+        <div class="small">${events.map(event => `${event.percent || 0}% ${event.message || event.stage || ""}`).map(escapeHtml).join(" · ")}</div>`;
+    }
+
+    function isProgressStageActive(stage, current) {
+      const order = ["queued", "starting", "prepare", "scrape", "scraped", "scoring", "saving", "complete"];
+      return order.indexOf(stage) <= order.indexOf(current) || stage === current;
+    }
+
+    async function pollSearch(searchId) {
+      const record = await api(`/api/searches/${encodeURIComponent(searchId)}`);
+      state.search = record;
+      renderSearchProgress(record);
+      if (record.status === "complete") {
+        clearInterval(state.searchTimer);
+        state.searchTimer = null;
+        $("runSearch").disabled = false;
+        $("runSearch").textContent = "Search";
+        await refreshAll();
+      } else if (record.status === "error") {
+        clearInterval(state.searchTimer);
+        state.searchTimer = null;
+        $("runSearch").disabled = false;
+        $("runSearch").textContent = "Search";
+      }
+    }
+
     async function runSearch() {
       const payload = {
         name: "ui-search",
@@ -1687,13 +2200,51 @@ INDEX_HTML = r"""<!doctype html>
         sites: $("searchSite").value.split(",").filter(Boolean),
       };
       $("runSearch").disabled = true;
-      $("runSearch").textContent = "Searching";
+      $("runSearch").textContent = "Searching...";
+      if (state.searchTimer) clearInterval(state.searchTimer);
+      state.search = {
+        status: "queued",
+        stage: "queued",
+        message: "Queued search",
+        percent: 0,
+        events: [{ percent: 0, message: "Queued search" }],
+      };
+      renderSearchProgress(state.search);
       try {
-        await api("/api/search", { method: "POST", body: JSON.stringify(payload) });
-        await refreshAll();
-      } finally {
+        const started = await api("/api/search/start", { method: "POST", body: JSON.stringify(payload) });
+        state.search = started;
+        renderSearchProgress(started);
+        await pollSearch(started.search_id);
+        if (state.search && ["complete", "error"].includes(state.search.status)) {
+          return;
+        }
+        state.searchTimer = setInterval(() => {
+          pollSearch(started.search_id).catch(error => {
+            clearInterval(state.searchTimer);
+            state.searchTimer = null;
+            state.search = {
+              status: "error",
+              stage: "error",
+              message: error.message,
+              percent: 100,
+              events: [{ percent: 100, message: error.message }],
+            };
+            renderSearchProgress(state.search);
+            $("runSearch").disabled = false;
+            $("runSearch").textContent = "Search";
+          });
+        }, 1200);
+      } catch (error) {
+        state.search = {
+          status: "error",
+          stage: "error",
+          message: error.message,
+          percent: 100,
+          events: [{ percent: 100, message: error.message }],
+        };
+        renderSearchProgress(state.search);
         $("runSearch").disabled = false;
-        $("runSearch").textContent = "Search Boards";
+        $("runSearch").textContent = "Search";
       }
     }
 
@@ -1749,8 +2300,23 @@ INDEX_HTML = r"""<!doctype html>
       return job.work_schedule && job.work_schedule !== "unknown";
     }
 
+    function initials(value) {
+      const parts = String(value || "")
+        .replace(/[^a-zA-Z0-9 ]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
+      const picked = parts.length > 1 ? [parts[0], parts[1]] : [parts[0] || "R"];
+      return picked.map(part => part[0]).join("").slice(0, 2).toUpperCase();
+    }
+
+    function formatWorkMode(value) {
+      const raw = String(value || "");
+      if (!raw || raw === "unknown") return "";
+      return raw.replace("_", "-");
+    }
+
     function formatSchedule(value) {
-      return String(value || "").replace("_", "-");
+      return String(value || "").replaceAll("_", "-");
     }
 
     function compactMoney(value) {
