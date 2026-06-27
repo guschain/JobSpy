@@ -1045,7 +1045,9 @@ INDEX_HTML = r"""<!doctype html>
       overflow-x: auto;
       padding: 2px 0 4px;
       max-width: 1120px;
+      scrollbar-width: none;
     }
+    .category-bar::-webkit-scrollbar { display: none; }
     .category-chip {
       border: 0;
       border-radius: 0;
@@ -1151,19 +1153,19 @@ INDEX_HTML = r"""<!doctype html>
       background: #fff7ed;
     }
     main {
-      display: grid;
-      grid-template-columns: minmax(620px, 58%) minmax(420px, 1fr);
+      display: block;
       min-height: calc(100vh - 214px);
     }
     aside {
-      border-right: 1px solid var(--line);
       background: var(--bg);
       min-width: 0;
     }
     .results-head {
-      padding: 18px 18px 8px;
+      padding: 20px 28px 8px;
       display: grid;
       gap: 4px;
+      max-width: 1560px;
+      margin: 0 auto;
     }
     .results-title {
       font-size: 18px;
@@ -1171,14 +1173,25 @@ INDEX_HTML = r"""<!doctype html>
       line-height: 1.25;
     }
     .filters {
-      display: grid;
-      grid-template-columns: minmax(150px, 1fr) 104px 108px;
+      display: flex;
       gap: 8px;
-      padding: 10px 18px;
+      padding: 10px 28px;
       align-items: end;
+      max-width: 1560px;
+      margin: 0 auto;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .filters::-webkit-scrollbar { display: none; }
+    .filters label {
+      min-width: 180px;
+    }
+    .filters label:first-child {
+      min-width: 280px;
     }
     .filter-panel {
-      margin: 0 18px 12px;
+      margin: 0 auto 12px;
+      max-width: calc(1560px - 56px);
       border: 1px solid var(--line);
       border-radius: 14px;
       background: #fff;
@@ -1202,9 +1215,13 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
-      padding: 0 18px 12px;
+      padding: 0 28px 16px;
       background: transparent;
+      max-width: 1560px;
+      margin: 0 auto;
+      scrollbar-width: none;
     }
+    .summary-strip::-webkit-scrollbar { display: none; }
     .summary-item {
       border: 1px solid var(--line);
       border-radius: 12px;
@@ -1224,12 +1241,12 @@ INDEX_HTML = r"""<!doctype html>
       margin-top: 2px;
     }
     .job-list {
-      overflow: auto;
-      max-height: calc(100vh - 344px);
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
-      gap: 14px;
-      padding: 0 18px 18px;
+      grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+      gap: 22px;
+      padding: 0 28px 34px;
+      max-width: 1560px;
+      margin: 0 auto;
     }
     .job-row {
       width: 100%;
@@ -1389,11 +1406,17 @@ INDEX_HTML = r"""<!doctype html>
     }
     section.detail {
       min-width: 0;
-      overflow: auto;
-      max-height: calc(100vh - 214px);
+      display: none;
       background: #fff;
-      position: sticky;
-      top: 214px;
+      border-top: 1px solid var(--line);
+      max-width: 1180px;
+      margin: 0 auto 42px;
+      border-radius: 22px;
+      overflow: hidden;
+      box-shadow: 0 12px 36px rgba(34, 34, 34, .12);
+    }
+    section.detail.open {
+      display: block;
     }
     .detail-head {
       padding: 22px 24px 18px;
@@ -1513,7 +1536,7 @@ INDEX_HTML = r"""<!doctype html>
       color: var(--muted);
     }
     @media (max-width: 900px) {
-      .cv-panel, main, .filters, .exclude-filters, .summary-strip, .form-grid {
+      .cv-panel, main, .exclude-filters, .summary-strip, .form-grid {
         grid-template-columns: 1fr;
       }
       header { padding: 16px 18px 12px; }
@@ -1575,12 +1598,24 @@ INDEX_HTML = r"""<!doctype html>
       .summary-item {
         min-width: 116px;
       }
+      .filters {
+        padding: 10px 18px;
+      }
+      .filter-panel {
+        margin-left: 18px;
+        margin-right: 18px;
+      }
+      .job-list {
+        padding-left: 18px;
+        padding-right: 18px;
+        grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+      }
       .detail-story, .highlight-row {
         grid-template-columns: 1fr;
       }
-      section.detail, .job-list {
-        max-height: none;
-        position: static;
+      section.detail {
+        margin-left: 18px;
+        margin-right: 18px;
       }
     }
   </style>
@@ -1630,32 +1665,32 @@ INDEX_HTML = r"""<!doctype html>
         <div class="results-title">Best matches</div>
         <div class="small">Ranked by fit, freshness, salary, work mode, and CV evidence.</div>
       </div>
-      <div class="filters">
-        <label>Search saved jobs <input id="localQuery" placeholder="company, skill, title"></label>
-        <label>Status
-          <select id="statusFilter">
-            <option value="">Any</option>
-            <option value="new">New</option>
-            <option value="saved">Saved</option>
-            <option value="applied">Applied</option>
-            <option value="follow_up">Follow up</option>
-            <option value="interview">Interview</option>
-            <option value="offer">Offer</option>
-            <option value="rejected">Rejected</option>
-            <option value="ignored">Ignored</option>
-          </select>
-        </label>
-        <label>Sort
-          <select id="sortBy">
-            <option value="score">Best match</option>
-            <option value="newest">Newest</option>
-            <option value="salary">Salary</option>
-            <option value="company">Company</option>
-          </select>
-        </label>
-      </div>
       <details class="filter-panel">
         <summary>Filters</summary>
+        <div class="filters">
+          <label>Search saved jobs <input id="localQuery" placeholder="company, skill, title"></label>
+          <label>Status
+            <select id="statusFilter">
+              <option value="">Any</option>
+              <option value="new">New</option>
+              <option value="saved">Saved</option>
+              <option value="applied">Applied</option>
+              <option value="follow_up">Follow up</option>
+              <option value="interview">Interview</option>
+              <option value="offer">Offer</option>
+              <option value="rejected">Rejected</option>
+              <option value="ignored">Ignored</option>
+            </select>
+          </label>
+          <label>Sort
+            <select id="sortBy">
+              <option value="score">Best match</option>
+              <option value="newest">Newest</option>
+              <option value="salary">Salary</option>
+              <option value="company">Company</option>
+            </select>
+          </label>
+        </div>
         <div class="exclude-filters">
           <label>Skills <input id="skillKeywords" placeholder="python, react"></label>
           <label>Min Score <input id="minScore" type="number" min="0" max="100" value="0"></label>
@@ -1884,11 +1919,12 @@ INDEX_HTML = r"""<!doctype html>
       renderList();
       if (state.selectedId && state.jobs.some(job => job.job_id === state.selectedId)) {
         await selectJob(state.selectedId);
-      } else if (state.jobs[0]) {
-        await selectJob(state.jobs[0].job_id);
       } else {
         state.selectedId = null;
-        $("detail").innerHTML = '<div class="empty">No jobs found.</div>';
+        $("detail").classList.remove("open");
+        $("detail").innerHTML = state.jobs.length
+          ? '<div class="empty">Select a role to open the listing.</div>'
+          : '<div class="empty">No jobs found.</div>';
       }
     }
 
@@ -1974,6 +2010,7 @@ INDEX_HTML = r"""<!doctype html>
       state.detail = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
       renderList();
       renderDetail();
+      $("detail").scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
     function renderDetail() {
@@ -1982,6 +2019,7 @@ INDEX_HTML = r"""<!doctype html>
       const job = payload.job;
       const raw = job.raw_job || {};
       const description = raw.description || job.description || "";
+      $("detail").classList.add("open");
       $("detail").innerHTML = `
         <div class="detail-head">
           <div class="detail-story">
